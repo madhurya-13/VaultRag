@@ -1,0 +1,28 @@
+name: vaultrag
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: vaultrag-postgres
+    restart: unless-stopped
+    environment:
+      # Local development-only credentials. Never reuse in production.
+      POSTGRES_USER: vaultrag
+      POSTGRES_PASSWORD: vaultrag_local_dev_password
+      POSTGRES_DB: vaultrag
+    ports:
+      # Bind to loopback only: the development database must not be reachable
+      # from other machines on the network.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - vaultrag_pgdata:/var/lib/postgresql/data
+      # Runs once, only when the data volume is empty.
+      - ./database/init.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vaultrag -d vaultrag"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  vaultrag_pgdata:
