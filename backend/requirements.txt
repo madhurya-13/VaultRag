@@ -1,0 +1,24 @@
+# VaultRAG - Milestone 1 backend dependencies
+# Pinned for reproducible installs. Python 3.11+ (tested on 3.12).
+
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+
+# Database
+SQLAlchemy==2.0.36
+psycopg[binary]==3.2.3
+alembic==1.14.0
+
+# Validation / configuration
+pydantic==2.10.4
+pydantic-settings==2.7.0
+email-validator==2.2.0
+python-dotenv==1.0.1
+
+# Security
+PyJWT==2.10.1
+argon2-cffi==23.1.0
+
+# Testing
+pytest==8.3.4
+httpx==0.28.1
