@@ -1,257 +1,500 @@
-# Security Design — VaultRAG Milestone 1
+# Security Design — VaultRAG Milestone 2
 
-This document explains the security decisions behind the implementation. The
-README is intentionally a quick start; this file is the interview/design
-reference.
+This document is the design reference for Milestone 2: centralized RBAC/ABAC
+authorization, document permissions, PostgreSQL row-level security (RLS),
+permission revocation and the security audit log.
+
+The README is the quick start. This file explains **why** the controls are
+arranged the way they are and what each layer does — and does not — protect.
 
 ---
 
-## 1. Trust model
+## 1. Scope and non-goals
 
-The JWT proves that a token was issued to a user. It does **not** prove that the
-user is still active, still belongs to that tenant, or still holds the roles
-written into the token.
+Implemented:
 
-On every protected request, `app/dependencies/authentication.py`:
+- authentication and tenant-scoped identity;
+- RBAC capabilities for administrative operations;
+- exact-match document permissions for roles or individual users;
+- ABAC attribute evaluation;
+- PostgreSQL `ENABLE` + `FORCE ROW LEVEL SECURITY`;
+- two restricted database roles with different privileges;
+- immediate permission and role revocation;
+- append-only security audit logging with request-ID correlation;
+- automated tests for all of the above.
+
+Out of scope for this milestone:
+
+- document ingestion and content storage;
+- embeddings, vector search, RAG, LLM or chatbot features;
+- frontend;
+- refresh tokens, MFA, email verification, password reset or invitations;
+- external identity providers;
+- independent penetration testing.
+
+---
+
+## 2. Security control map
+
+```mermaid
+flowchart TB
+    subgraph Untrusted["Untrusted / client-controlled"]
+        C[Browser or API client]
+    end
+
+    subgraph API["FastAPI process (trusted code)"]
+        A[Route]
+        N[JWT authentication<br/>reload user, tenant, roles from DB]
+        E[Central authorization engine<br/>app/services/authorization.py]
+        R[RBAC<br/>administrative capabilities]
+        D[Document permissions<br/>exact action grants]
+        B[ABAC<br/>department, clearance, employment]
+        AU[Audit writer]
+        C --> A
+        A --> N
+        N --> E
+        E --> R
+        E --> D
+        E --> B
+        E --> AU
+    end
+
+    subgraph DB["PostgreSQL (trusted boundary)"]
+        APP[vaultrag_app<br/>NOSUPERUSER, NOBYPASSRLS<br/>no DDL]
+        MIG[vaultrag_migrator<br/>schema owner<br/>NOSUPERUSER, NOBYPASSRLS]
+        RLS[FORCE RLS<br/>tenant_isolation on every tenant table]
+        AUD[(security_audit_logs<br/>SELECT + INSERT only)]
+        APP --> RLS
+        MIG --> RLS
+        RLS --> AUD
+    end
+
+    A --> APP
+    MIG -. Alembic only .-> DB
+```
+
+Key idea: **the application makes an authorization decision, and PostgreSQL
+independently enforces tenant isolation.** A bug in one layer must not be enough
+to cross a tenant boundary.
+
+---
+
+## 3. Four controls that are often confused
+
+| Control | Question it answers | Scope | Where implemented |
+|---|---|---|---|
+| **RBAC** | May this user perform this administrative action? | Tenant, role-level | `app/services/rbac.py` |
+| **Document permissions** | May this user or role perform this exact action on this document? | One document per grant | `app/services/document_permissions.py` |
+| **ABAC** | Does this user's current context satisfy the document's policy? | Per request, attribute-driven | `app/services/abac.py` |
+| **RLS** | May this database role see or write this tenant's row at all? | Every tenant table, every query | PostgreSQL policies |
+| **Authorization engine** | What is the final decision, and how is it audited? | All document actions | `app/services/authorization.py` |
+
+They are deliberately independent:
+
+- RBAC does **not** grant document content access to non-admin roles.
+- A document permission does **not** grant tenant administration.
+- ABAC is evaluated **after** RBAC/document permissions and can only deny
+  further; it never grants access by itself.
+- RLS applies even if the application forgets a `WHERE tenant_id = ...` filter.
+- The engine is the only place that combines these signals and records the
+  decision.
+
+---
+
+## 4. Trust model and request lifecycle
+
+The JWT proves that a token was signed by this service. It does **not** prove
+that the user is still active, still belongs to the tenant, still holds the roles
+in the token, or still has the claimed attributes.
+
+Every protected request:
 
 1. Extracts the bearer token.
-2. Verifies the signature, expiry and required claims.
+2. Verifies signature, expiry and required claims.
 3. Loads the user by `sub` from PostgreSQL.
 4. Rejects the token if its `tenant_id` claim differs from the user row.
 5. Checks user and organization `is_active`.
 6. Reloads current roles from `user_roles` / `roles`.
-7. Returns a frozen `AuthenticatedContext`.
+7. Sets transaction-local RLS context to the trusted tenant.
+8. Builds a frozen `AuthenticatedContext`.
+
+Tenant identity is always derived from the **JWT claim plus the database user
+row**, never from a query parameter, request body or custom header. The
+pre-authentication tenant passed to `/auth/login` is only a selector used to
+find the account; it is not trusted for any later authorization decision.
 
 Consequences:
 
 - Deactivating a user invalidates existing tokens immediately.
 - Revoking a role takes effect on the next request.
-- A stale `roles` claim in the JWT is ignored for authorization.
+- A stale `roles` claim in the JWT is ignored.
+- The client cannot choose a tenant by editing a request.
 
 ---
 
-## 2. Tenant isolation in three layers
+## 5. Tenant isolation in depth
 
-### Layer 1 — Authenticated context
+Isolation exists at five levels:
 
-`AuthenticatedContext.tenant_id` is a property of the database user:
+1. **Authentication context** — tenant comes from the verified token and the
+   database row.
+2. **Application query filters** — services filter by `tenant_id` explicitly.
+3. **Composite foreign keys** — child rows cannot reference a parent in a
+   different tenant. Examples: `(tenant_id, document_id)`, `(tenant_id,
+   user_id)`, `(tenant_id, role_id)`.
+4. **PostgreSQL RLS** — `tenant_isolation` policies deny rows outside
+   `security.current_tenant_id()`.
+5. **Audit trail** — every allow/deny decision records the tenant and actor.
 
-```python
-@property
-def tenant_id(self) -> UUID:
-    return self.user.tenant_id
-```
+Cross-tenant identifiers return **404**, not 403, so endpoints cannot be used to
+enumerate the existence of another tenant's resources.
 
-No route accepts a tenant identifier for an authenticated action.
+---
 
-### Layer 2 — Mandatory query filters
+## 6. Database roles and privileges
 
-Every tenant-sensitive query includes the authenticated tenant:
+Two login roles are used in development and production:
 
-```python
-select(User).where(User.tenant_id == context.tenant_id)
-```
+| Role | Purpose | Superuser | BYPASSRLS | DDL |
+|---|---|---|---|---|
+| `vaultrag_app` | Runtime API connection | no | no | no |
+| `vaultrag_migrator` | Alembic and schema ownership | no | no | yes (owner) |
 
-Cross-tenant object IDs return `404`, not `403`, so the API does not confirm
-that another tenant's object exists.
+The original `vaultrag` role is only a bootstrap/owner account used to create
+databases and run `database/bootstrap_roles.sql`. It must not be used by the API.
 
-### Layer 3 — Database composite foreign keys
+### Runtime grants (`vaultrag_app`)
 
-`user_roles` stores one `tenant_id` shared by two composite references:
+| Table | Privileges |
+|---|---|
+| `organizations` | `SELECT`, `INSERT` |
+| `roles` | `SELECT`, `INSERT` |
+| `users` | `SELECT`, `INSERT`, `UPDATE` |
+| `user_roles` | `SELECT`, `INSERT`, `DELETE` |
+| `documents` | `SELECT`, `INSERT`, `UPDATE` |
+| `document_permissions` | `SELECT`, `INSERT`, `UPDATE` |
+| `user_attributes` | `SELECT`, `INSERT`, `UPDATE` |
+| `security_audit_logs` | `SELECT`, `INSERT` |
+
+Notable omissions:
+
+- no `DELETE` on documents (documents are deactivated, not hard-deleted);
+- no `UPDATE` or `DELETE` on audit logs (append-only);
+- no `UPDATE` on organizations (tenant lifecycle is an operator action);
+- no `CREATE` on schema `public`;
+- no `CREATE` on the database;
+- no table ownership.
+
+The runtime role can use schema `security` and execute
+`security.current_tenant_id()`, but cannot create or replace it.
+
+---
+
+## 7. PostgreSQL row-level security
+
+Every tenant-owned table has:
 
 ```sql
-FOREIGN KEY (tenant_id, user_id) REFERENCES users (tenant_id, user_id)
-FOREIGN KEY (tenant_id, role_id) REFERENCES roles  (tenant_id, role_id)
+ALTER TABLE <table> ENABLE ROW LEVEL SECURITY;
+ALTER TABLE <table> FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON <table>
+AS PERMISSIVE
+FOR ALL
+TO PUBLIC
+USING (
+    security.current_tenant_id() IS NOT NULL
+    AND tenant_id = security.current_tenant_id()
+)
+WITH CHECK (
+    security.current_tenant_id() IS NOT NULL
+    AND tenant_id = security.current_tenant_id()
+);
 ```
 
-`users` and `roles` each have `UNIQUE (tenant_id, <id>)` to support these
-references. A row linking user A (tenant A) to role B (tenant B) fails because
-`(tenant_A, role_B)` does not exist. PostgreSQL rejects it even if application
-code is bypassed. This is tested directly in
-`test_cross_tenant_user_role_row_is_rejected_by_the_database`.
+Tables covered:
+
+`organizations`, `roles`, `users`, `user_roles`, `documents`,
+`document_permissions`, `user_attributes`, `security_audit_logs`.
+
+Why `FORCE` and `TO PUBLIC`:
+
+- `FORCE` applies the policy to the table owner too. The migrator owns the
+  tables, so a data migration cannot accidentally bypass RLS.
+- `TO PUBLIC` avoids accidentally exempting a future role.
+- Only a superuser or a role with `BYPASSRLS` can bypass these policies. Neither
+  application role has either attribute.
+
+### Tenant context function
+
+```sql
+CREATE OR REPLACE FUNCTION security.current_tenant_id()
+RETURNS uuid
+LANGUAGE plpgsql
+STABLE
+PARALLEL SAFE
+AS $$
+BEGIN
+    RETURN NULLIF(
+        current_setting('app.current_tenant_id', true),
+        ''
+    )::uuid;
+EXCEPTION
+    WHEN invalid_text_representation THEN
+        RETURN NULL;
+END;
+$$;
+```
+
+- Missing setting → `NULL`.
+- Empty string → `NULL`.
+- Malformed UUID → `NULL`.
+- `NULL` context makes the policy predicate false, so **all tenant rows are
+  denied**.
+
+### Transaction-local context
+
+The API sets the context with:
+
+```sql
+SELECT set_config('app.current_tenant_id', :tenant_id, true);
+```
+
+The third argument `true` makes it transaction-local. It is cleared on commit or
+rollback, so a pooled connection cannot leak tenant A's context to tenant B's
+next request.
+
+The request boundary also matters:
+
+- `get_db` owns the transaction and commits exactly once after the route
+  succeeds.
+- Services call `flush()`, not `commit()`. A nested commit would clear the
+  transaction-local setting mid-request.
+- Any exception rolls back, which clears the context before the connection is
+  returned to the pool.
+
+The test suite explicitly covers commit, rollback and pooled-connection reuse.
+
+### Data migrations and bootstrap
+
+Because the migrator is also subject to RLS, migrations that read or write
+tenant rows must set the context first. Schema DDL is unaffected. Bootstrap
+flows that create a new tenant switch the context to the new tenant ID before
+inserting dependent rows.
 
 ---
 
-## 3. Tenant-scoped schema
+## 8. Central authorization engine
 
-| Table | Tenant rule |
+Every document operation flows through `app/services/authorization.py`. Routes
+do not query `document_permissions` or compare clearance levels directly.
+
+Decision order:
+
+1. **Action validation** — must be `READ`, `UPDATE`, `DELETE` or
+   `MANAGE_PERMISSIONS`.
+2. **Identity** — user must be active.
+3. **Organization** — organization must be active.
+4. **Tenant** — document tenant must equal the trusted context tenant.
+5. **Document state** — inactive documents are denied.
+6. **RBAC / document permission**:
+   - `ADMIN` has an implicit tenant-wide document capability for all four
+     actions;
+   - every other role needs an exact active `document_permissions` row for the
+     requested action.
+7. **ABAC**:
+   - required attributes must exist and be valid;
+   - employment status must be `ACTIVE`;
+   - department must match unless `cross_department_allowed` or the caller is
+     `ADMIN`;
+   - clearance must meet the document requirement.
+
+The engine returns a decision containing the final policy identifier and reason.
+`enforce_authorization` records the decision and raises `404` for a missing
+tenant-scoped resource or `403` for a denied action.
+
+### Why ADMIN still goes through ABAC
+
+ADMIN can manage documents tenant-wide, including across departments, but
+clearance and employment are still enforced. This prevents a compromised admin
+account from reading `RESTRICTED` material above its clearance. Bootstrap of a
+new admin therefore requires a second admin or an operator database session; an
+admin cannot raise their own clearance.
+
+---
+
+## 9. Document permissions
+
+A grant has exactly one subject, enforced by a database check constraint:
+
+```sql
+num_nonnulls(role_id, user_id) = 1
+```
+
+Grant properties:
+
+- `permission_type`: `READ`, `UPDATE`, `DELETE`, `MANAGE_PERMISSIONS`;
+- `expires_at`: optional future timestamp;
+- `cross_department_allowed`: explicit ABAC override;
+- `granted_by`, `granted_at`;
+- `is_active`, `revoked_at`, `revoked_by`.
+
+Semantics:
+
+- Types are **exact-match**. `MANAGE_PERMISSIONS` does not imply `READ`,
+  `UPDATE` or `DELETE`.
+- Active duplicates are blocked by partial unique indexes for role and user
+  subjects.
+- A permission can expire without being explicitly revoked.
+- Revocation is soft: `is_active = false`, `revoked_at` is set, and the row is
+  retained as history.
+- Re-granting after revocation creates a new active row.
+- The authorization engine reloads permissions on every request; there is no
+  authorization cache.
+
+The database also enforces `expires_at > granted_at` and
+`is_active OR revoked_at IS NOT NULL`, so a silent inactive grant is impossible.
+
+---
+
+## 10. ABAC attributes
+
+Stored in `user_attributes` with a unique `(tenant_id, user_id,
+attribute_name)` key.
+
+Allowed attributes:
+
+- `department`;
+- `clearance_level` (`0`–`5`);
+- `employment_status` (`ACTIVE`, `INACTIVE`, `SUSPENDED`, `TERMINATED`);
+- `location`;
+- `designation`.
+
+Required for document access:
+
+- `department`;
+- `clearance_level`;
+- `employment_status`.
+
+Rules:
+
+1. Missing required attribute → `ATTRIBUTE_VALIDATION_POLICY` deny.
+2. Malformed value (including a corrupted database value) → deny.
+3. Employment status other than `ACTIVE` → `EMPLOYMENT_STATUS_POLICY` deny.
+4. Department mismatch without override → `DEPARTMENT_POLICY` deny.
+5. Clearance below requirement → `CLEARANCE_POLICY` deny.
+
+Classification floors:
+
+| Classification | Minimum clearance |
 |---|---|
-| `organizations` | tenant root; `tenant_id` is the primary key |
-| `users` | `tenant_id NOT NULL`; email and username unique per tenant |
-| `roles` | `tenant_id NOT NULL`; role name unique per tenant |
-| `user_roles` | one `tenant_id`; composite FKs enforce consistency |
+| `PUBLIC` | 0 |
+| `INTERNAL` | 1 |
+| `CONFIDENTIAL` | 3 |
+| `RESTRICTED` | 4 |
 
-Every tenant-owned table has a `NOT NULL tenant_id`, which is the prerequisite
-for adding RLS later without restructuring.
+A document cannot be created with a `required_clearance_level` below its
+classification floor. The floor is applied by the service, not just the client.
 
-Email addresses are normalised to lowercase before storage and lookup. The same
-email may exist in different organizations, but not twice in one organization.
-
----
-
-## 4. Authentication and password handling
-
-### Passwords
-
-- Argon2id via `argon2-cffi` (memory-hard, random salt per hash).
-- 12–128 characters, at least one letter and one digit.
-- Small common-password deny-list.
-- Re-hash on login when Argon2 parameters change.
-- Login accepts any non-empty password up to 128 characters so older accounts
-  can still sign in after a policy change.
-
-### Login
-
-- Requires tenant ID, email and password.
-- Unknown email, wrong password and inactive account return the same `401`
-  message.
-- A dummy Argon2 verification runs for unknown accounts to equalise timing.
-- Account/tenant state is checked after password verification.
-
-### JWT
-
-- Secret comes from `JWT_SECRET_KEY` (minimum 32 characters).
-- Production startup rejects placeholder secrets.
-- Explicit algorithm allow-list; `alg: none` and algorithm confusion are
-  impossible.
-- Required claims: `exp`, `iat`, `sub`, `tenant_id`, `type`.
-- `type` must be `access`; `sub` and `tenant_id` must be UUIDs.
-- Lifetime: `ACCESS_TOKEN_EXPIRE_MINUTES` (1–1440).
-- No refresh tokens in Milestone 1.
+Attribute reads are self-service or ADMIN. Attribute writes require
+`MANAGE_ATTRIBUTES` and cannot target the caller's own `clearance_level`. The
+database stores `updated_by` for attribution.
 
 ---
 
-## 5. Privilege and onboarding model
+## 11. Security audit
 
-### Public signup
+`security_audit_logs` records:
 
-`POST /auth/register` creates a user that is:
+- tenant, actor, resource type and ID;
+- action and decision (`ALLOW` / `DENY`);
+- human-readable reason;
+- policy identifier;
+- request ID and client IP;
+- server timestamp.
 
-- in the requested active tenant,
-- `is_active = false`,
-- assigned no roles.
+### Transaction rules
 
-It cannot log in until an administrator activates it and assigns a role. The
-request schema uses `extra="forbid"`, so `role_names`, `role_id`, `roles` and
-`is_active` are rejected with `422`.
+- **Allowed** decisions are written in the same transaction as the business
+  action. If the audit insert fails, the whole request rolls back. This is the
+  fail-closed rule: a security action must not succeed without its audit record.
+- **Denied** decisions use an independent session and commit immediately. The
+  request transaction is about to be rolled back, so using the request session
+  would discard the denial.
+- Reading the audit log is itself audited.
 
-### First administrator
+### Append-only enforcement
 
-The first ADMIN is created out-of-band:
+The runtime role has only `SELECT` and `INSERT` on the audit table. It cannot
+update or delete rows. In addition, all audit reads and writes go through RLS,
+so one tenant cannot see another tenant's audit trail.
 
-```powershell
-python -m app.scripts.bootstrap_admin --tenant-id ... --username ... --email ...
-```
-
-The script:
-
-- requires an existing, active tenant;
-- refuses to silently promote an existing email;
-- assigns only that tenant's `ADMIN` role;
-- prompts for the password without echo.
-
-No public HTTP endpoint can create or promote an administrator.
-
-### Admin operations
-
-All `/users` routes require a **current** `ADMIN` role loaded from the database.
-Role names are resolved inside the authenticated tenant; role IDs and tenant IDs
-are never accepted from the client. Admins cannot deactivate themselves or
-remove their own last `ADMIN` role.
+Cross-tenant admin attempts (for example, changing a foreign user's status or
+roles) return 404, do not mutate the foreign tenant, and are recorded as `DENY`
+in the **actor's** audit trail.
 
 ---
 
-## 6. Mass assignment and input validation
+## 12. Error handling and information leakage
 
-All request models inherit `StrictRequestModel` with:
+- Missing or invalid credentials → `401`.
+- Authenticated but not allowed → `403`, except cross-tenant resources → `404`.
+- Invalid input → `422` for schema validation, `400` for business-rule
+  validation.
+- Duplicate active grant or double revocation → `409`.
+- Audit write failure → the request fails; the business transaction rolls back.
 
-```python
-model_config = ConfigDict(extra="forbid")
-```
-
-This prevents clients from setting fields the endpoint did not intend to expose.
-Additional validation:
-
-- usernames: 3–100 safe characters;
-- emails: validated and normalised;
-- role names: uppercase identifier pattern;
-- passwords: bounded and policy-checked.
+Responses do not reveal whether a cross-tenant user, document or permission
+exists.
 
 ---
 
-## 7. Application filtering vs PostgreSQL RLS
+## 13. Test coverage map
 
-Milestone 1 has **application-level filtering + database integrity constraints**.
-It does **not** enable Row-Level Security.
-
-- **Application filtering:** `WHERE tenant_id = :authenticated_tenant`. A
-  forgotten clause could return too much data.
-- **RLS:** PostgreSQL rewrites every query against a policy such as
-  `USING (tenant_id = current_setting('app.tenant_id')::uuid)`. It protects even
-  forgotten filters and ad-hoc SQL, provided the application connects as a
-  non-owner role and sets the session variable per transaction.
-
-Planned Milestone 2 steps:
-
-1. Create a non-owner application database role.
-2. `ENABLE` and `FORCE ROW LEVEL SECURITY` on every tenant table.
-3. Create tenant-isolation policies using `current_setting('app.tenant_id')`.
-4. Run `SET LOCAL app.tenant_id = ...` at the start of each transaction.
-5. Keep application filters as defence in depth.
-
-`database/init.sql` documents this plan without enabling it.
-
----
-
-## 8. Error handling and information leakage
-
-| Status | Meaning |
+| Security property | Test file |
 |---|---|
-| 400 | Invalid request or tenant-integrity violation |
-| 401 | Missing, expired, tampered or inactive credentials |
-| 403 | Authenticated but lacks ADMIN |
-| 404 | Not found **in the caller's tenant** |
-| 409 | Duplicate email/username/role |
-| 422 | Validation error or unknown field |
+| Role catalogue, capabilities, immediate role revocation | `test_rbac.py` |
+| Attribute validation, clearance, department, employment, malformed DB values | `test_abac.py` |
+| Exact-match grants, role/direct subjects, inactive documents, `MANAGE_PERMISSIONS` | `test_document_permissions.py` |
+| Expiry, soft revocation, re-grant, cross-tenant revoke | `test_permission_revocation.py` |
+| Allowed/denied audit rows, append-only, request ID, audit fail-closed | `test_security_audit.py` |
+| `FORCE RLS`, owner access, no/wrong/malformed context, pooled connections, grants | `test_rls.py` |
+| Cross-tenant users, documents, audit, admin actions and composite FKs | `test_tenant_isolation.py` |
 
-- Authentication failures are generic.
-- Cross-tenant lookups are indistinguishable from missing objects.
-- Unexpected exceptions are handled by FastAPI; internal details are not
-  returned to clients.
-- Logs contain user/tenant IDs but never passwords or tokens.
+The suite runs against the real restricted database roles and real RLS
+policies, not mocks.
 
 ---
 
-## 9. Security test coverage
+## 14. Operational notes
 
-`pytest -q` runs 31 tests against PostgreSQL. They cover:
-
-- distinct tenant IDs and default roles;
-- tenant-correct user creation;
-- same email across tenants allowed, within one tenant rejected;
-- successful login and JWT claims;
-- wrong password, wrong tenant, unknown account;
-- expired, modified and wrong-key tokens;
-- cross-tenant user listing and direct lookup (IDOR);
-- inactive users and organizations;
-- public signup mass-assignment attempts;
-- non-admin privilege escalation attempts;
-- cross-tenant role links rejected by the database;
-- immediate role revocation on an existing token;
-- admin self-lockout guardrails;
-- missing/malformed bearer tokens.
-
-Test docstrings state the vulnerability each test checks.
+- Run `database/bootstrap_roles.sql` before `alembic upgrade head`. The RLS
+  migration fails loudly if `vaultrag_app` is missing.
+- Keep `DATABASE_URL` on `vaultrag_app` and `MIGRATION_DATABASE_URL` on
+  `vaultrag_migrator`. Never point the API at the schema owner.
+- Use strong, distinct passwords outside local development.
+- When adding a new tenant-owned table:
+  1. include `tenant_id` and a composite FK to `organizations`;
+  2. add it to the RLS migration/table list;
+  3. add explicit `vaultrag_app` grants;
+  4. add tenant-isolation and audit tests.
+- Do not grant `BYPASSRLS`, superuser or table ownership to the runtime role.
+- If a data fix must run as the migrator, set
+  `app.current_tenant_id` in the same transaction or use a superuser maintenance
+  session with change control.
 
 ---
 
-## 10. Known limitations
+## 15. Known limitations
 
-- No RLS yet.
-- No email verification, invitations, password reset or MFA.
-- No login rate limiting or account lockout.
-- No audit log.
-- No refresh tokens or token revocation list.
-- Public signup can create pending accounts in any known tenant (admin
-  approval prevents access, but spam is possible).
-- Not independently security-audited.
+- No document content, embeddings, vector search, LLM or frontend yet.
+- No refresh-token rotation, token revocation list, MFA or login rate limiting.
+- No public bootstrap endpoint for the first administrator's ABAC attributes;
+  use a second admin or an operator session.
+- The audit table is append-only for the runtime role, but a database owner or
+  superuser can still alter it. Protect those credentials and ship audit rows to
+  external storage for high-assurance environments.
+- RLS protects tenant isolation, not row-level business permissions. Document
+  authorization remains an application responsibility, backed by constraints.
+- This project follows production patterns but has not been independently
+  security-audited.

@@ -8,6 +8,7 @@ Interactive docs: http://127.0.0.1:8000/docs
 
 import logging
 from contextlib import asynccontextmanager
+from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,7 +19,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.database import engine, get_db
 from app.core.exceptions import AppError
-from app.routes import auth, organizations, users
+from app.routes import attributes, auth, documents, organizations, security, users
 
 settings = get_settings()
 
@@ -42,11 +43,12 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="VaultRAG API",
-    version="1.0.0",
-    summary="Permission-aware multi-tenant RAG platform - Milestone 1 foundation",
+    version="2.0.0",
+    summary="Permission-aware multi-tenant RAG platform - Milestone 2 authorization",
     description=(
         "Secure backend foundation: tenants, users, tenant-scoped roles, JWT "
-        "authentication and server-side tenant isolation.\n\n"
+        "authentication, centralized RBAC/ABAC document authorization, "
+        "PostgreSQL row-level security and append-only security audit logs.\n\n"
         "**Authentication:** call `POST /auth/login` with email, password and "
         "tenant_id, then click **Authorize** and paste the returned "
         "`access_token`."
@@ -59,8 +61,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "Accept"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "X-Request-ID"],
+    expose_headers=["X-Request-ID"],
 )
 
 
@@ -85,6 +88,31 @@ async def security_headers(request: Request, call_next):
     return response
 
 
+@app.middleware("http")
+async def request_context(request: Request, call_next):
+    """Attach a correlation ID and client IP to the request/audit context.
+
+    A caller-supplied X-Request-ID is accepted only as a correlation hint, never
+    for authorization. Invalid values are replaced with a fresh UUID.
+    """
+    raw_request_id = request.headers.get("X-Request-ID")
+    request_id: UUID
+    if raw_request_id:
+        try:
+            request_id = UUID(raw_request_id)
+        except ValueError:
+            request_id = uuid4()
+    else:
+        request_id = uuid4()
+
+    request.state.request_id = request_id
+    request.state.client_ip = request.client.host if request.client else None
+
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = str(request_id)
+    return response
+
+
 @app.get("/", tags=["Health"], summary="Service metadata")
 def root() -> dict[str, str]:
     return {
@@ -104,3 +132,6 @@ def health(db: Session = Depends(get_db)) -> dict[str, str]:
 app.include_router(auth.router)
 app.include_router(organizations.router)
 app.include_router(users.router)
+app.include_router(attributes.router)
+app.include_router(documents.router)
+app.include_router(security.router)

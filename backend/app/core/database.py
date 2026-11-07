@@ -8,14 +8,20 @@ Why these choices
   write migration scripts.
 * ``expire_on_commit=False`` keeps ORM objects usable after the service layer
   commits, avoiding an extra SELECT while building API responses.
-* ``get_db`` rolls back on any exception and always closes the session. This is
-  the only place request sessions are created, so transactions cannot leak
-  between requests.
+* ``get_db`` owns the request transaction: it commits once, after the route has
+  completed successfully, and rolls back on any exception. Services therefore
+  call ``flush()`` instead of committing internally. This is essential for RLS:
+  ``set_config(..., true)`` is transaction-local and would be lost by a nested
+  commit.
+* ``set_tenant_context`` writes the tenant into the current transaction. RLS
+  policies call ``security.current_tenant_id()``, which reads this setting. A
+  missing or malformed setting evaluates to NULL, so policies deny by default.
 """
 
 from collections.abc import Generator
+from uuid import UUID
 
-from sqlalchemy import MetaData, create_engine
+from sqlalchemy import MetaData, create_engine, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import get_settings
@@ -54,14 +60,36 @@ SessionLocal = sessionmaker(
 
 
 def get_db() -> Generator[Session, None, None]:
-    """FastAPI dependency: one session per request, guaranteed cleanup."""
+    """FastAPI dependency: one transaction per request with guaranteed cleanup.
+
+    A successful request commits exactly once. This includes read-only requests;
+    the commit is cheap and makes the transaction boundary unambiguous. Any
+    exception rolls the transaction back, which also clears the tenant context
+    before the connection is returned to the pool.
+    """
     db = SessionLocal()
     try:
         yield db
+        db.commit()
     except Exception:
-        # The service layer may have flushed but not committed. Never leave a
-        # failed transaction open on a pooled connection.
         db.rollback()
         raise
     finally:
         db.close()
+
+
+def set_tenant_context(db: Session, tenant_id: UUID) -> None:
+    """Bind the current transaction to a tenant for PostgreSQL RLS.
+
+    ``set_config(..., true)`` is transaction-local, parameterized and safe to
+    call on every request. Calling it again in the same transaction replaces the
+    value (used by bootstrap/provisioning flows that deliberately switch from a
+    new tenant to an existing one).
+    """
+    if tenant_id is None:
+        raise ValueError("tenant_id is required to establish tenant context")
+
+    db.execute(
+        text("SELECT set_config('app.current_tenant_id', :tenant_id, true)"),
+        {"tenant_id": str(tenant_id)},
+    )

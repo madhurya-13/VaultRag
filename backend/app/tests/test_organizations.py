@@ -27,13 +27,19 @@ def test_register_two_organizations_receive_distinct_uuids(client):
     UUID(second["tenant_id"])
 
     assert first["is_active"] is True
-    assert first["roles"] == ["ADMIN", "ENGINEERING", "FINANCE", "HR"]
+    assert first["roles"] == ["ADMIN", "EMPLOYEE", "ENGINEERING", "FINANCE", "HR"]
 
 
 def test_organization_registration_creates_default_roles(client):
     """Every tenant gets its own role rows, not shared global roles."""
     organization = register_organization(client, "TechNova")
-    assert set(organization["roles"]) == {"ADMIN", "HR", "FINANCE", "ENGINEERING"}
+    assert set(organization["roles"]) == {
+        "ADMIN",
+        "HR",
+        "FINANCE",
+        "ENGINEERING",
+        "EMPLOYEE",
+    }
 
 
 def test_organization_registration_rejects_mass_assignment(client):

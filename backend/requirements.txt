@@ -1,4 +1,4 @@
-# VaultRAG - Milestone 1 backend dependencies
+# VaultRAG - Milestone 2 backend dependencies
 # Pinned for reproducible installs. Python 3.11+ (tested on 3.12).
 
 fastapi==0.115.6

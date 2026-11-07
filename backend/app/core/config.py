@@ -41,6 +41,17 @@ class Settings(BaseSettings):
         default=None,
         description="Database used by pytest. The test suite truncates it.",
     )
+    migration_database_url: str | None = Field(
+        default=None,
+        description=(
+            "DDL-capable URL used by Alembic. Falls back to DATABASE_URL for "
+            "local development; production should use a separate migrator role."
+        ),
+    )
+    test_migration_database_url: str | None = Field(
+        default=None,
+        description="DDL-capable test database URL used by pytest's Alembic setup.",
+    )
 
     jwt_secret_key: SecretStr = Field(..., description="HMAC signing secret (>= 32 chars)")
     jwt_algorithm: Literal["HS256", "HS384", "HS512"] = "HS256"
@@ -50,7 +61,12 @@ class Settings(BaseSettings):
     sql_echo: bool = False
     log_level: str = "INFO"
 
-    @field_validator("database_url", "test_database_url")
+    @field_validator(
+        "database_url",
+        "test_database_url",
+        "migration_database_url",
+        "test_migration_database_url",
+    )
     @classmethod
     def _must_be_postgres(cls, value: str | None) -> str | None:
         if value is None:

@@ -14,6 +14,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.database import set_tenant_context
 from app.core.exceptions import (
     BadRequestError,
     ConflictError,
@@ -132,10 +133,12 @@ def create_user(
             )
             for role in roles
         )
-        db.commit()
+        db.flush()
     except IntegrityError as exc:
         # Covers races that slip past the pre-check, plus the composite
-        # tenant-consistency constraints (defence in depth).
+        # tenant-consistency constraints (defence in depth). The request
+        # boundary rolls back; this rollback also releases the failed
+        # transaction before we translate the error.
         db.rollback()
         logger.warning("User creation failed integrity check for tenant %s", tenant_id)
         raise ConflictError(
@@ -161,6 +164,10 @@ def register_public_user(
     caller can request membership of an active tenant, but cannot activate the
     account or choose a role. An administrator must approve it.
     """
+    # The caller supplied this tenant as a pre-authentication selector. It is
+    # not trusted for authorization, but it is the correct RLS context for the
+    # insert and for the active-organization check below.
+    set_tenant_context(db, tenant_id)
     return create_user(
         db,
         tenant_id=tenant_id,
@@ -184,6 +191,7 @@ def authenticate_user(
     All failures return the same generic error so an attacker cannot enumerate
     accounts, roles or tenant state.
     """
+    set_tenant_context(db, tenant_id)
     row = db.execute(
         select(User, Organization)
         .join(Organization, Organization.tenant_id == User.tenant_id)
@@ -210,7 +218,7 @@ def authenticate_user(
 
     if password_needs_rehash(user.password_hash):
         user.password_hash = hash_password(password)
-        db.commit()
+        db.flush()
 
     return user
 
@@ -326,7 +334,7 @@ def assign_role(
         )
     )
     try:
-        db.commit()
+        db.flush()
     except IntegrityError as exc:
         db.rollback()
         # If the composite FK fired, the request was cross-tenant despite the
@@ -376,7 +384,7 @@ def revoke_role(
             raise BadRequestError("Cannot remove your own last ADMIN role")
 
     db.delete(link)
-    db.commit()
+    db.flush()
     logger.info("Revoked role=%s from user=%s", role.role_name, user_id)
 
 
@@ -395,7 +403,7 @@ def set_user_active(
         raise BadRequestError("You cannot deactivate your own account")
 
     user.is_active = is_active
-    db.commit()
+    db.flush()
     db.refresh(user)
     logger.info("Set user=%s is_active=%s", user.user_id, is_active)
     return user

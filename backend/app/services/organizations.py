@@ -1,11 +1,13 @@
 """Organization (tenant) business logic."""
 
 import logging
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.database import set_tenant_context
 from app.core.exceptions import ConflictError, ForbiddenError, NotFoundError
 from app.models import Organization, Role
 
@@ -17,6 +19,7 @@ DEFAULT_ROLES: tuple[tuple[str, str], ...] = (
     ("HR", "Human resources documents and employee data"),
     ("FINANCE", "Financial documents and reports"),
     ("ENGINEERING", "Engineering documentation and technical assets"),
+    ("EMPLOYEE", "Standard employee with explicitly granted document access"),
 )
 
 
@@ -24,13 +27,19 @@ def register_organization(db: Session, organization_name: str) -> Organization:
     """Create a tenant and its default role catalogue.
 
     The tenant UUID is generated server-side. Role rows are created in the same
-    transaction, so a tenant can never exist with a partial role catalogue.
+    transaction, so a tenant can never exist with a partial role catalogue. The
+    new tenant becomes the transaction's RLS context before the first insert.
     """
-    organization = Organization(organization_name=organization_name)
+    tenant_id = uuid4()
+    set_tenant_context(db, tenant_id)
+
+    organization = Organization(
+        tenant_id=tenant_id,
+        organization_name=organization_name,
+    )
     db.add(organization)
 
     try:
-        # flush() assigns the Python-side UUID so roles can reference it.
         db.flush()
         db.add_all(
             Role(
@@ -40,7 +49,7 @@ def register_organization(db: Session, organization_name: str) -> Organization:
             )
             for name, description in DEFAULT_ROLES
         )
-        db.commit()
+        db.flush()
     except IntegrityError as exc:
         db.rollback()
         logger.exception("Organization registration failed")
@@ -53,7 +62,7 @@ def register_organization(db: Session, organization_name: str) -> Organization:
 
 def get_organization_or_raise(
     db: Session,
-    tenant_id,
+    tenant_id: UUID,
     *,
     require_active: bool = True,
 ) -> Organization:
