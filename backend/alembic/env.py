@@ -1,8 +1,9 @@
 """Alembic environment.
 
 The database URL comes from application settings (environment / .env), never
-from alembic.ini, so the migration command uses exactly the same configuration
-as the API.
+from alembic.ini. ``MIGRATION_DATABASE_URL`` is preferred when configured so
+schema changes run as a DDL-capable migrator role rather than the restricted
+runtime role.
 """
 
 from logging.config import fileConfig
@@ -22,8 +23,9 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 settings = get_settings()
+migration_url = settings.migration_database_url or settings.database_url
 # configparser treats % specially; escape it.
-config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
+config.set_main_option("sqlalchemy.url", migration_url.replace("%", "%%"))
 
 target_metadata = Base.metadata
 

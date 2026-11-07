@@ -20,7 +20,9 @@ import getpass
 import sys
 from uuid import UUID
 
-from app.core.database import SessionLocal
+from sqlalchemy import select
+
+from app.core.database import SessionLocal, set_tenant_context
 from app.core.exceptions import AppError
 from app.models import Organization
 from app.services.bootstrap import provision_initial_admin
@@ -53,7 +55,12 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     with SessionLocal() as db:
-        organization = db.get(Organization, args.tenant_id)
+        # RLS requires a tenant context even for the operator CLI. The tenant ID
+        # is an explicit operator argument, never request input.
+        set_tenant_context(db, args.tenant_id)
+        organization = db.scalar(
+            select(Organization).where(Organization.tenant_id == args.tenant_id)
+        )
         if organization is None:
             print(f"Error: organization {args.tenant_id} does not exist", file=sys.stderr)
             return 1
@@ -66,9 +73,14 @@ def main(argv: list[str] | None = None) -> int:
                 email=args.email,
                 password=password,
             )
+            db.commit()
         except AppError as exc:
+            db.rollback()
             print(f"Error: {exc.detail}", file=sys.stderr)
             return 1
+        except Exception:
+            db.rollback()
+            raise
 
     print("Initial admin provisioned successfully.")
     print(f"  user_id   : {admin.user_id}")

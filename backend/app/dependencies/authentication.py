@@ -19,16 +19,19 @@ from uuid import UUID
 
 from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.database import get_db
+from app.core.database import get_db, set_tenant_context
 from app.core.exceptions import ForbiddenError, UnauthorizedError
 from app.core.security import (
     TokenExpiredError,
     TokenInvalidError,
     decode_access_token,
 )
+from app.core.security_constants import CAP_MANAGE_USERS
 from app.models import Organization, User
+from app.services.rbac import has_capability
 from app.services.users import role_names_for_user
 
 logger = logging.getLogger(__name__)
@@ -60,6 +63,9 @@ class AuthenticatedContext:
     def has_role(self, role_name: str) -> bool:
         return role_name in self.roles
 
+    def has_capability(self, capability: str) -> bool:
+        return has_capability(self.roles, capability)
+
 
 def get_current_auth(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
@@ -76,7 +82,17 @@ def get_current_auth(
     except TokenInvalidError as exc:
         raise UnauthorizedError("Invalid access token") from exc
 
-    user = db.get(User, claims.sub)
+    # Establish the RLS tenant context from the signed claim BEFORE any table
+    # lookup. The row lookup below then re-validates that the user really
+    # belongs to this tenant; a forged claim cannot select another tenant.
+    set_tenant_context(db, claims.tenant_id)
+
+    user = db.scalar(
+        select(User).where(
+            User.user_id == claims.sub,
+            User.tenant_id == claims.tenant_id,
+        )
+    )
     if user is None or not user.is_active:
         raise UnauthorizedError("Authentication required")
 
@@ -92,7 +108,9 @@ def get_current_auth(
         )
         raise UnauthorizedError("Invalid access token")
 
-    organization = db.get(Organization, user.tenant_id)
+    organization = db.scalar(
+        select(Organization).where(Organization.tenant_id == user.tenant_id)
+    )
     if organization is None or not organization.is_active:
         raise UnauthorizedError("Authentication required")
 
@@ -109,7 +127,20 @@ def get_current_auth(
 def require_admin(
     context: AuthenticatedContext = Depends(get_current_auth),
 ) -> AuthenticatedContext:
-    """Allow only callers whose CURRENT database roles include ADMIN."""
-    if not context.has_role("ADMIN"):
+    """Allow only callers whose CURRENT database roles grant MANAGE_USERS."""
+    if not has_capability(context.roles, CAP_MANAGE_USERS):
         raise ForbiddenError("ADMIN role required")
     return context
+
+
+def require_capability(capability: str):
+    """Build a FastAPI dependency for a non-document RBAC capability."""
+
+    def _dependency(
+        context: AuthenticatedContext = Depends(get_current_auth),
+    ) -> AuthenticatedContext:
+        if not has_capability(context.roles, capability):
+            raise ForbiddenError("Insufficient role capability")
+        return context
+
+    return _dependency

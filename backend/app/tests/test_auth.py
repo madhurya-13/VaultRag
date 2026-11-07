@@ -18,6 +18,7 @@ from app.tests.helpers import (
     login,
     public_register,
     register_organization,
+    use_tenant,
 )
 
 
@@ -49,6 +50,10 @@ def test_public_registration_is_pending_and_tenant_scoped(client, db):
     assert user_a["is_active"] is False
     assert user_a["roles"] == []
 
+    stored = db.scalar(select(User).where(User.user_id == UUID(user_a["user_id"])))
+    assert stored is None  # no tenant context: RLS denies by default
+
+    use_tenant(db, first["tenant_id"])
     stored = db.scalar(select(User).where(User.user_id == UUID(user_a["user_id"])))
     assert stored is not None
     assert stored.tenant_id == UUID(first["tenant_id"])
@@ -251,6 +256,7 @@ def test_inactive_user_cannot_authenticate_or_use_existing_token(client, db):
 
     assert client.get("/auth/me", headers=auth_headers(token)).status_code == 200
 
+    use_tenant(db, organization["tenant_id"])
     admin.is_active = False
     db.commit()
 
@@ -258,15 +264,20 @@ def test_inactive_user_cannot_authenticate_or_use_existing_token(client, db):
     assert client.get("/auth/me", headers=auth_headers(token)).status_code == 401
 
 
-def test_inactive_organization_blocks_login_and_tokens(client, db):
+def test_inactive_organization_blocks_login_and_tokens(client, db, migration_db):
     """Vulnerability checked: suspended tenant users keeping access."""
     organization, _, token = create_admin_bundle(
         client, db, organization_name="TechNova", email="admin@technova.com"
     )
 
     stored = db.get(Organization, UUID(organization["tenant_id"]))
+    assert stored is None  # no context
+
+    use_tenant(migration_db, organization["tenant_id"])
+    stored = migration_db.get(Organization, UUID(organization["tenant_id"]))
+    assert stored is not None
     stored.is_active = False
-    db.commit()
+    migration_db.commit()
 
     assert _login_request(client, organization["tenant_id"], "admin@technova.com").status_code == 401
     assert client.get("/auth/me", headers=auth_headers(token)).status_code == 401
@@ -290,6 +301,7 @@ def test_passwords_are_stored_as_argon2id_hashes(client, db):
         client, db, organization_name="TechNova", email="admin@technova.com"
     )
 
+    use_tenant(db, admin.tenant_id)
     db.refresh(admin)
     assert admin.password_hash != PASSWORD
     assert PASSWORD not in admin.password_hash

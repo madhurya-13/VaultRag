@@ -11,6 +11,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.database import set_tenant_context
 from app.core.exceptions import ConflictError
 from app.models import User
 from app.services.organizations import get_organization_or_raise
@@ -37,6 +38,9 @@ def provision_initial_admin(
     * ADMIN is resolved inside the tenant, so the new admin can only ever receive
       that tenant's ADMIN role.
     """
+    # This is an operator action with an explicit tenant argument, so the
+    # service is allowed to establish the RLS context itself.
+    set_tenant_context(db, tenant_id)
     get_organization_or_raise(db, tenant_id, require_active=True)
 
     existing = db.scalar(

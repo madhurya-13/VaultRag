@@ -7,14 +7,21 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.security import create_access_token
-from app.models import Role, User, UserRole
+from app.models import Document, DocumentPermission, Role, User, UserRole
 from app.tests.helpers import (
     PASSWORD,
+    access_check,
+    admin_bundle_with_attributes,
     admin_create_user,
     auth_headers,
     create_admin_bundle,
+    create_document,
+    get_audit_logs,
+    grant_document_permission,
     login,
     public_register,
+    read_document,
+    use_tenant,
 )
 
 
@@ -136,6 +143,7 @@ def test_non_admin_cannot_grant_themselves_admin(client, db):
     assert response.status_code == 403
 
     db.expire_all()
+    use_tenant(db, data["a_org"]["tenant_id"])
     admin_role_id = db.scalar(
         select(Role.role_id).where(
             Role.tenant_id == UUID(data["a_org"]["tenant_id"]),
@@ -181,6 +189,7 @@ def test_cross_tenant_user_role_row_is_rejected_by_the_database(client, db):
     """
     data = _two_tenants(client, db)
 
+    use_tenant(db, data["b_org"]["tenant_id"])
     foreign_role = db.scalar(
         select(Role).where(
             Role.tenant_id == UUID(data["b_org"]["tenant_id"]),
@@ -188,10 +197,14 @@ def test_cross_tenant_user_role_row_is_rejected_by_the_database(client, db):
         )
     )
     assert foreign_role is not None
+    foreign_role_id = foreign_role.role_id
 
+    # Switch the same transaction to tenant A. Tenant B's role is no longer
+    # visible, but the row ID is enough to attempt the bad association.
+    use_tenant(db, data["a_org"]["tenant_id"])
     bad_link = UserRole(
         user_id=data["a_admin"].user_id,
-        role_id=foreign_role.role_id,  # role belongs to tenant B
+        role_id=foreign_role_id,  # role belongs to tenant B
         tenant_id=data["a_admin"].tenant_id,  # single shared tenant value
     )
     db.add(bad_link)
@@ -201,8 +214,10 @@ def test_cross_tenant_user_role_row_is_rejected_by_the_database(client, db):
     db.rollback()
 
     # Both halves exist individually; only the tenant-consistency rule failed.
+    use_tenant(db, data["a_org"]["tenant_id"])
     assert db.get(User, data["a_admin"].user_id) is not None
-    assert db.get(Role, foreign_role.role_id) is not None
+    use_tenant(db, data["b_org"]["tenant_id"])
+    assert db.get(Role, foreign_role_id) is not None
 
 
 def test_token_with_mismatched_tenant_claim_is_rejected(client, db):
@@ -345,4 +360,215 @@ def test_missing_tenant_context_is_denied(client, db):
             headers={"X-Tenant-ID": data["b_org"]["tenant_id"]},
         ).status_code
         == 401
+    )
+
+
+def test_cross_tenant_document_access_and_audit_are_isolated(client, db):
+    """TEST 18 (part 1) - documents and their audit trails never cross tenants."""
+    org_a, admin_a, admin_a_token = admin_bundle_with_attributes(
+        client,
+        db,
+        organization_name="Alpha Corp",
+        email="admin@alpha.com",
+        username="alpha_admin",
+    )
+    org_b, admin_b, admin_b_token = admin_bundle_with_attributes(
+        client,
+        db,
+        organization_name="Beta Corp",
+        email="admin@beta.com",
+        username="beta_admin",
+    )
+    document_a = create_document(client, admin_a_token, document_name="Alpha secret")
+
+    # Tenant B cannot read or manipulate tenant A's document.
+    assert read_document(client, admin_b_token, document_a["document_id"]).status_code == 404
+    check = access_check(client, admin_b_token, document_a["document_id"], "READ")
+    assert check["allowed"] is False
+    assert check["policy"] == "RESOURCE_NOT_FOUND_POLICY"
+
+    grant = client.post(
+        f"/documents/{document_a['document_id']}/permissions",
+        headers=auth_headers(admin_b_token),
+        json={"permission_type": "READ", "role_name": "HR"},
+    )
+    assert grant.status_code == 404
+
+    # The denial is recorded in tenant B's audit trail, not tenant A's.
+    events_b = get_audit_logs(client, admin_b_token, resource_id=document_a["document_id"])
+    assert events_b
+    assert all(event["tenant_id"] == org_b["tenant_id"] for event in events_b)
+    assert any(event["decision"] == "DENY" for event in events_b)
+
+    events_a = get_audit_logs(client, admin_a_token)
+    assert all(event["tenant_id"] == org_a["tenant_id"] for event in events_a)
+    assert not [
+        event for event in events_a if event["resource_id"] == document_a["document_id"] and event["decision"] == "DENY"
+    ]
+
+
+def test_cross_tenant_admin_actions_are_denied_and_audited(client, db):
+    """TEST 18 (part 2) - an admin's authority stops at the tenant boundary."""
+    org_a, admin_a, admin_a_token = admin_bundle_with_attributes(
+        client,
+        db,
+        organization_name="Alpha Corp",
+        email="admin@alpha.com",
+        username="alpha_admin",
+    )
+    org_b, admin_b, admin_b_token = admin_bundle_with_attributes(
+        client,
+        db,
+        organization_name="Beta Corp",
+        email="admin@beta.com",
+        username="beta_admin",
+    )
+    foreign_user = admin_create_user(
+        client,
+        admin_b_token,
+        email="hr@beta.com",
+        username="beta_hr",
+        role_names=["HR"],
+    )
+    headers = auth_headers(admin_a_token)
+
+    assert (
+        client.patch(
+            f"/users/{foreign_user['user_id']}/status",
+            headers=headers,
+            json={"is_active": False},
+        ).status_code
+        == 404
+    )
+    assert (
+        client.post(
+            f"/users/{foreign_user['user_id']}/roles",
+            headers=headers,
+            json={"role_name": "ADMIN"},
+        ).status_code
+        == 404
+    )
+    assert (
+        client.delete(
+            f"/users/{foreign_user['user_id']}/roles/HR",
+            headers=headers,
+        ).status_code
+        == 404
+    )
+
+    # The foreign user is untouched.
+    verify = client.get(
+        f"/users/{foreign_user['user_id']}", headers=auth_headers(admin_b_token)
+    )
+    assert verify.status_code == 200
+    assert verify.json()["is_active"] is True
+    assert verify.json()["roles"] == ["HR"]
+
+    # The attempts are visible only in tenant A's audit trail.
+    events_a = get_audit_logs(
+        client, admin_a_token, resource_id=foreign_user["user_id"]
+    )
+    denied_actions = {
+        event["action"]
+        for event in events_a
+        if event["decision"] == "DENY"
+    }
+    assert {"ROLE_ASSIGN", "ROLE_REVOKE", "USER_STATUS_UPDATE"} <= denied_actions
+    assert all(event["tenant_id"] == org_a["tenant_id"] for event in events_a)
+
+    events_b = get_audit_logs(
+        client, admin_b_token, resource_id=foreign_user["user_id"]
+    )
+    assert all(event["tenant_id"] == org_b["tenant_id"] for event in events_b)
+    assert all(event["decision"] == "ALLOW" for event in events_b if event["action"] == "USER_CREATE")
+
+
+def test_cross_tenant_document_uploader_fk_is_rejected_by_the_database(client, db):
+    """The composite FK prevents a document from claiming a foreign uploader."""
+    org_a, admin_a, admin_a_token = admin_bundle_with_attributes(
+        client,
+        db,
+        organization_name="Alpha Corp",
+        email="admin@alpha.com",
+        username="alpha_admin",
+    )
+    org_b, admin_b, admin_b_token = admin_bundle_with_attributes(
+        client,
+        db,
+        organization_name="Beta Corp",
+        email="admin@beta.com",
+        username="beta_admin",
+    )
+
+    use_tenant(db, org_a["tenant_id"])
+    db.add(
+        Document(
+            tenant_id=UUID(org_a["tenant_id"]),
+            document_name="Bad uploader",
+            document_type="policy",
+            department="ENGINEERING",
+            classification="INTERNAL",
+            required_clearance_level=1,
+            uploaded_by=admin_b.user_id,  # belongs to tenant B
+            is_active=True,
+        )
+    )
+    with pytest.raises(IntegrityError):
+        db.commit()
+    db.rollback()
+
+    use_tenant(db, org_a["tenant_id"])
+    assert (
+        db.scalar(
+            select(Document).where(Document.document_name == "Bad uploader")
+        )
+        is None
+    )
+
+
+def test_cross_tenant_document_permission_fk_is_rejected_by_the_database(client, db):
+    """A permission row cannot reference a document or user from another tenant."""
+    org_a, admin_a, admin_a_token = admin_bundle_with_attributes(
+        client,
+        db,
+        organization_name="Alpha Corp",
+        email="admin@alpha.com",
+        username="alpha_admin",
+    )
+    org_b, admin_b, admin_b_token = admin_bundle_with_attributes(
+        client,
+        db,
+        organization_name="Beta Corp",
+        email="admin@beta.com",
+        username="beta_admin",
+    )
+    document_a = create_document(client, admin_a_token)
+    foreign_user_id = admin_b.user_id
+    local_admin_id = admin_a.user_id
+
+    use_tenant(db, org_a["tenant_id"])
+    db.add(
+        DocumentPermission(
+            tenant_id=UUID(org_a["tenant_id"]),
+            document_id=UUID(document_a["document_id"]),
+            user_id=foreign_user_id,  # foreign user
+            permission_type="READ",
+            granted_by=local_admin_id,
+            is_active=True,
+            cross_department_allowed=False,
+        )
+    )
+    with pytest.raises(IntegrityError):
+        db.commit()
+    db.rollback()
+
+    use_tenant(db, org_a["tenant_id"])
+    assert (
+        db.scalar(
+            select(DocumentPermission).where(
+                DocumentPermission.document_id == UUID(document_a["document_id"]),
+                DocumentPermission.user_id == foreign_user_id,
+            )
+        )
+        is None
     )

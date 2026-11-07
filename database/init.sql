@@ -8,9 +8,21 @@
 -- It can also be executed manually against a local PostgreSQL installation:
 --   psql -U postgres -f database/init.sql
 --
--- The application schema itself is owned by Alembic, not by this file:
+-- This file creates the databases only. It deliberately does NOT create the
+-- runtime/migration roles because their passwords must not be committed.
+--
+-- After this script, run the role bootstrap once per database:
+--   psql -v app_password='...' -v migrator_password='...' \
+--        -d vaultrag -f database/bootstrap_roles.sql
+--   psql -v app_password='...' -v migrator_password='...' \
+--        -d vaultrag_test -f database/bootstrap_roles.sql
+--
+-- Then apply the schema with the migrator URL:
 --   cd backend
 --   alembic upgrade head
+--
+-- The API connects as vaultrag_app (NOSUPERUSER, NOBYPASSRLS). Alembic connects
+-- as vaultrag_migrator, which owns the tables and the security schema.
 -- ===========================================================================
 
 -- PostgreSQL has no CREATE DATABASE IF NOT EXISTS. \gexec executes the
@@ -24,27 +36,21 @@ SELECT 'CREATE DATABASE vaultrag_test'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'vaultrag_test')\gexec
 
 -- ===========================================================================
--- MILESTONE 2 READINESS - NOT IMPLEMENTED YET
+-- What the migrations add
 -- ===========================================================================
--- Milestone 1 enforces tenant isolation in the application layer and with
--- composite foreign keys. It does NOT enable PostgreSQL Row-Level Security.
+-- Milestone 1:
+--   * tenant root, users, roles, user_roles;
+--   * composite tenant-safe foreign keys.
 --
--- The schema was designed so RLS can be added without restructuring:
---   * every tenant-owned table has a NOT NULL tenant_id;
---   * roles/users/user_roles all reference the tenant root;
---   * composite FKs prevent cross-tenant associations.
+-- Milestone 2:
+--   * documents, document_permissions, user_attributes, security_audit_logs;
+--   * security.current_tenant_id() reading app.current_tenant_id;
+--   * ENABLE + FORCE ROW LEVEL SECURITY on every tenant table;
+--   * tenant_isolation policies for PUBLIC;
+--   * least-privilege grants for vaultrag_app;
+--   * append-only audit table (SELECT + INSERT only for the runtime role).
 --
--- Planned Milestone 2 approach (do not run this yet):
---   1. Create a non-owner application role (e.g. vaultrag_app).
---   2. For each tenant table:
---        ALTER TABLE users ENABLE ROW LEVEL SECURITY;
---        ALTER TABLE users FORCE ROW LEVEL SECURITY;
---        CREATE POLICY tenant_isolation ON users
---          USING (tenant_id = current_setting('app.tenant_id', true)::uuid);
---   3. At the start of each request/transaction:
---        SET LOCAL app.tenant_id = '<authenticated tenant uuid>';
---   4. Keep application-level filters as defence in depth.
---
--- RLS is a database safety net, not a replacement for the authenticated
--- tenant context implemented in the API.
+-- Tenant context is transaction-local:
+--   SELECT set_config('app.current_tenant_id', :tenant_id, true);
+-- Missing/malformed context evaluates to NULL and denies all tenant rows.
 -- ===========================================================================
