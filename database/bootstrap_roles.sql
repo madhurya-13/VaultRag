@@ -82,6 +82,20 @@ BEGIN
 END
 $$;
 
+-- pgvector lives outside the public schema so the test-suite schema reset
+-- cannot remove it. Grant access and make the type resolvable by unqualified
+-- ``vector(384)`` declarations.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'extensions') THEN
+        EXECUTE 'GRANT USAGE ON SCHEMA extensions TO vaultrag_app, vaultrag_migrator';
+    END IF;
+END
+$$;
+
+ALTER ROLE vaultrag_app SET search_path = public, extensions;
+ALTER ROLE vaultrag_migrator SET search_path = public, extensions;
+
 -- If the security schema has already been created by a prior migration, make
 -- the migrator its owner too. This block is a no-op on a fresh database.
 DO $$

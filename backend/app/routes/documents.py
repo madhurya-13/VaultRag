@@ -3,19 +3,29 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.request_context import RequestMeta, get_request_meta
-from app.core.security_constants import CAP_CREATE_DOCUMENT, POLICY_ALLOW
+from app.core.security_constants import (
+    CAP_CREATE_DOCUMENT,
+    CAP_PROCESS_DOCUMENT,
+    CAP_VIEW_CHUNKS,
+    POLICY_ALLOW,
+)
 from app.dependencies.authentication import (
     AuthenticatedContext,
     get_current_auth,
     require_capability,
 )
-from app.models import Document, DocumentPermission
-from app.schemas.document import DocumentCreateRequest, DocumentResponse
+from app.models import Document, DocumentIngestionJob, DocumentPermission
+from app.schemas.document import (
+    DocumentChunkResponse,
+    DocumentCreateRequest,
+    DocumentResponse,
+    DocumentStatusResponse,
+)
 from app.schemas.document_permission import (
     AccessCheckResponse,
     PermissionGrantRequest,
@@ -30,10 +40,16 @@ from app.services.document_permissions import (
     grant_permission,
     revoke_permission,
 )
+from app.services.document_upload import upload_document
 from app.services.documents import (
     create_document,
     get_tenant_document,
     list_accessible_documents,
+)
+from app.services.ingestion_service import (
+    latest_ingestion_job,
+    list_document_chunks,
+    process_document,
 )
 from app.services.security_audit import log_security_event
 
@@ -52,6 +68,33 @@ def _document_response(document: Document) -> DocumentResponse:
         uploaded_by=document.uploaded_by,
         is_active=document.is_active,
         created_at=document.created_at,
+        updated_at=document.updated_at,
+        file_hash=document.file_hash,
+        file_size=document.file_size,
+        processing_status=document.processing_status,
+        total_pages=document.total_pages,
+        total_chunks=document.total_chunks,
+        embedding_model=document.embedding_model,
+    )
+
+
+def _status_response(
+    document: Document,
+    job: DocumentIngestionJob | None,
+) -> DocumentStatusResponse:
+    return DocumentStatusResponse(
+        document_id=document.document_id,
+        processing_status=document.processing_status,
+        total_pages=document.total_pages,
+        total_chunks=document.total_chunks,
+        embedding_model=document.embedding_model,
+        file_size=document.file_size,
+        job_id=job.job_id if job is not None else None,
+        job_status=job.status if job is not None else None,
+        error_code=job.error_code if job is not None else None,
+        error_message=job.error_message if job is not None else None,
+        started_at=job.started_at if job is not None else None,
+        completed_at=job.completed_at if job is not None else None,
         updated_at=document.updated_at,
     )
 
@@ -112,6 +155,37 @@ def create_document_endpoint(
     return _document_response(document)
 
 
+@router.post(
+    "/upload",
+    response_model=DocumentResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Upload a PDF to private storage (CREATE_DOCUMENT capability)",
+)
+def upload_document_endpoint(
+    document_name: Annotated[str, Form(min_length=1, max_length=255)],
+    department: Annotated[str, Form(min_length=1, max_length=50)],
+    classification: Annotated[str, Form(min_length=1, max_length=20)],
+    file: Annotated[UploadFile, File(description="PDF file")],
+    context: AuthenticatedContext = Depends(
+        require_capability(CAP_CREATE_DOCUMENT)
+    ),
+    db: Session = Depends(get_db),
+    request_meta: RequestMeta = Depends(get_request_meta),
+) -> DocumentResponse:
+    document = upload_document(
+        db,
+        context,
+        stream=file.file,
+        original_filename=file.filename,
+        content_type=file.content_type,
+        document_name=document_name,
+        department=department,
+        classification=classification,
+        request_meta=request_meta,
+    )
+    return _document_response(document)
+
+
 @router.get(
     "",
     response_model=list[DocumentResponse],
@@ -153,6 +227,104 @@ def get_document(
     enforce_authorization(db, context, decision, request_meta)
     document = get_tenant_document(db, context.tenant_id, document_id)
     return _document_response(document)
+
+
+@router.post(
+    "/{document_id}/process",
+    response_model=DocumentStatusResponse,
+    summary="Extract, chunk and embed a document (PROCESS_DOCUMENT capability)",
+)
+def process_document_endpoint(
+    document_id: UUID,
+    context: AuthenticatedContext = Depends(
+        require_capability(CAP_PROCESS_DOCUMENT)
+    ),
+    db: Session = Depends(get_db),
+    request_meta: RequestMeta = Depends(get_request_meta),
+) -> DocumentStatusResponse:
+    process_document(
+        context,
+        document_id,
+        request_meta=request_meta,
+    )
+    document = get_tenant_document(db, context.tenant_id, document_id)
+    job = latest_ingestion_job(
+        db,
+        tenant_id=context.tenant_id,
+        document_id=document_id,
+    )
+    return _status_response(document, job)
+
+
+@router.get(
+    "/{document_id}/status",
+    response_model=DocumentStatusResponse,
+    summary="Read ingestion status for an authorized document",
+)
+def get_document_status(
+    document_id: UUID,
+    context: AuthenticatedContext = Depends(get_current_auth),
+    db: Session = Depends(get_db),
+    request_meta: RequestMeta = Depends(get_request_meta),
+) -> DocumentStatusResponse:
+    decision = authorize_document(db, context, document_id, "READ")
+    enforce_authorization(db, context, decision, request_meta)
+    document = get_tenant_document(db, context.tenant_id, document_id)
+    job = latest_ingestion_job(
+        db,
+        tenant_id=context.tenant_id,
+        document_id=document_id,
+    )
+    return _status_response(document, job)
+
+
+@router.get(
+    "/{document_id}/chunks",
+    response_model=list[DocumentChunkResponse],
+    summary="Inspect stored chunks and metadata (VIEW_CHUNKS + document READ)",
+)
+def get_document_chunks(
+    document_id: UUID,
+    context: AuthenticatedContext = Depends(require_capability(CAP_VIEW_CHUNKS)),
+    db: Session = Depends(get_db),
+    request_meta: RequestMeta = Depends(get_request_meta),
+) -> list[DocumentChunkResponse]:
+    # Chunk text is document content, so VIEW_CHUNKS alone is not enough:
+    # the caller must also pass normal document READ authorization (including
+    # ABAC). The capability check keeps this endpoint admin-only.
+    decision = authorize_document(db, context, document_id, "READ")
+    enforce_authorization(db, context, decision, request_meta)
+    document = get_tenant_document(db, context.tenant_id, document_id)
+    chunks = list_document_chunks(
+        db,
+        tenant_id=context.tenant_id,
+        document_id=document.document_id,
+    )
+    log_security_event(
+        db,
+        tenant_id=context.tenant_id,
+        user_id=context.user.user_id,
+        resource_type="DOCUMENT_CHUNK",
+        resource_id=document.document_id,
+        action="CHUNKS_VIEW",
+        decision="ALLOW",
+        reason=f"Returned {len(chunks)} chunks for ingestion inspection",
+        policy=POLICY_ALLOW,
+        request_meta=request_meta,
+    )
+    return [
+        DocumentChunkResponse(
+            chunk_id=chunk.chunk_id,
+            document_id=chunk.document_id,
+            chunk_index=chunk.chunk_index,
+            chunk_text=chunk.chunk_text,
+            page_start=chunk.page_start,
+            page_end=chunk.page_end,
+            metadata=chunk.chunk_metadata,
+            created_at=chunk.created_at,
+        )
+        for chunk in chunks
+    ]
 
 
 @router.get(

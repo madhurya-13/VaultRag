@@ -35,6 +35,23 @@ WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'vaultrag')\gexec
 SELECT 'CREATE DATABASE vaultrag_test'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'vaultrag_test')\gexec
 
+-- ---------------------------------------------------------------------------
+-- pgvector
+-- ---------------------------------------------------------------------------
+-- Install pgvector in a dedicated schema. The pytest fixture drops and
+-- recreates the public schema between runs; keeping the extension in
+-- ``extensions`` means the vector type survives that reset.
+--
+-- The application and migration roles get USAGE on this schema in
+-- database/bootstrap_roles.sql.
+\connect vaultrag
+CREATE SCHEMA IF NOT EXISTS extensions;
+CREATE EXTENSION IF NOT EXISTS vector SCHEMA extensions;
+
+\connect vaultrag_test
+CREATE SCHEMA IF NOT EXISTS extensions;
+CREATE EXTENSION IF NOT EXISTS vector SCHEMA extensions;
+
 -- ===========================================================================
 -- What the migrations add
 -- ===========================================================================
@@ -49,6 +66,13 @@ WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'vaultrag_test')\gexec
 --   * tenant_isolation policies for PUBLIC;
 --   * least-privilege grants for vaultrag_app;
 --   * append-only audit table (SELECT + INSERT only for the runtime role).
+--
+-- Milestone 3:
+--   * documents file/ingestion columns (hash, private key, size, status,
+--     page/chunk totals, embedding model);
+--   * document_chunks with VECTOR(384) embeddings and trusted JSONB metadata;
+--   * document_ingestion_jobs with an active-job partial unique index;
+--   * RLS and least-privilege grants on both new tables.
 --
 -- Tenant context is transaction-local:
 --   SELECT set_config('app.current_tenant_id', :tenant_id, true);
