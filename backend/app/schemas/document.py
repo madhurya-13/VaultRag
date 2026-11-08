@@ -28,3 +28,39 @@ class DocumentResponse(StrictRequestModel):
     is_active: bool
     created_at: datetime
     updated_at: datetime
+
+    # Milestone 3 ingestion information. Storage paths are intentionally not
+    # exposed through the API.
+    file_hash: str | None = None
+    file_size: int | None = None
+    processing_status: str = "UPLOADED"
+    total_pages: int = 0
+    total_chunks: int = 0
+    embedding_model: str | None = None
+
+
+class DocumentStatusResponse(StrictRequestModel):
+    document_id: UUID
+    processing_status: str
+    total_pages: int
+    total_chunks: int
+    embedding_model: str | None = None
+    file_size: int | None = None
+    job_id: UUID | None = None
+    job_status: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    updated_at: datetime
+
+
+class DocumentChunkResponse(StrictRequestModel):
+    chunk_id: UUID
+    document_id: UUID
+    chunk_index: int
+    chunk_text: str
+    page_start: int
+    page_end: int
+    metadata: dict
+    created_at: datetime

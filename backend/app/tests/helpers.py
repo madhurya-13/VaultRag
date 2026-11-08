@@ -1,7 +1,11 @@
 """Shared test helpers. Kept out of conftest so tests can import them normally."""
 
+import re
+import tempfile
+from pathlib import Path
 from uuid import UUID
 
+import fitz
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -10,6 +14,11 @@ from app.models import User, UserAttribute
 from app.services.bootstrap import provision_initial_admin
 
 PASSWORD = "SecurePassword123!"
+DEFAULT_PDF_TEXT = (
+    "VaultRAG stores documents privately and derives every security field "
+    "from trusted server-side records. This paragraph is deliberately long "
+    "enough to produce extractable text and multiple embedding chunks. "
+) * 4
 
 
 def use_tenant(db: Session, tenant_id: str | UUID) -> None:
@@ -361,3 +370,180 @@ def tenant_user_with_attributes(
     )
     token = login(client, tenant_id, email, password=password)
     return user, token
+
+
+# ---------------------------------------------------------------------------
+# Milestone 3 test helpers
+# ---------------------------------------------------------------------------
+
+
+def make_pdf_bytes(
+    pages: list[str] | None = None,
+    *,
+    encrypt_password: str | None = None,
+    image_only: bool = False,
+) -> bytes:
+    """Create a real PDF in memory for upload/extraction tests."""
+    page_texts = pages or [DEFAULT_PDF_TEXT]
+    document = fitz.open()
+    try:
+        for text in page_texts:
+            page = document.new_page()
+            if image_only:
+                pixmap = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 32, 32), 0)
+                pixmap.clear_with(255)
+                page.insert_image(fitz.Rect(72, 72, 240, 240), pixmap=pixmap)
+            else:
+                page.insert_textbox(
+                    fitz.Rect(36, 36, 560, 800),
+                    text,
+                    fontsize=9,
+                    align=0,
+                )
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as handle:
+            path = Path(handle.name)
+        try:
+            save_kwargs = {}
+            if encrypt_password:
+                save_kwargs = {
+                    "encryption": fitz.PDF_ENCRYPT_AES_256,
+                    "user_pw": encrypt_password,
+                    "owner_pw": encrypt_password,
+                }
+            document.save(str(path), **save_kwargs)
+            return path.read_bytes()
+        finally:
+            path.unlink(missing_ok=True)
+    finally:
+        document.close()
+
+
+def make_blank_pdf_bytes() -> bytes:
+    """A real PDF with one page and no extractable text."""
+    document = fitz.open()
+    try:
+        page = document.new_page()
+        page.draw_rect(fitz.Rect(72, 72, 300, 300), fill=(0.5, 0.5, 0.5))
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as handle:
+            path = Path(handle.name)
+        try:
+            document.save(str(path))
+            return path.read_bytes()
+        finally:
+            path.unlink(missing_ok=True)
+    finally:
+        document.close()
+
+
+def upload_pdf(
+    client: TestClient,
+    token: str,
+    pdf_bytes: bytes | None = None,
+    *,
+    filename: str = "policy.pdf",
+    document_name: str = "Policy Document",
+    department: str = "ENGINEERING",
+    classification: str = "INTERNAL",
+    content_type: str = "application/pdf",
+    extra_form: dict[str, str] | None = None,
+):
+    form = {
+        "document_name": document_name,
+        "department": department,
+        "classification": classification,
+    }
+    if extra_form:
+        form.update(extra_form)
+    return client.post(
+        "/documents/upload",
+        headers=auth_headers(token),
+        data=form,
+        files={
+            "file": (
+                filename,
+                make_pdf_bytes() if pdf_bytes is None else pdf_bytes,
+                content_type,
+            )
+        },
+    )
+
+
+def process_document(client: TestClient, token: str, document_id: str | UUID):
+    return client.post(
+        f"/documents/{document_id}/process",
+        headers=auth_headers(token),
+    )
+
+
+def document_status(client: TestClient, token: str, document_id: str | UUID):
+    return client.get(
+        f"/documents/{document_id}/status",
+        headers=auth_headers(token),
+    )
+
+
+def document_chunks(client: TestClient, token: str, document_id: str | UUID):
+    return client.get(
+        f"/documents/{document_id}/chunks",
+        headers=auth_headers(token),
+    )
+
+
+class WhitespaceTokenizer:
+    """Deterministic word-level tokenizer used by unit tests and fake embeddings."""
+
+    def __init__(self) -> None:
+        self._word_to_id: dict[str, int] = {}
+        self._id_to_word: dict[int, str] = {}
+
+    def _intern(self, word: str) -> int:
+        if word not in self._word_to_id:
+            token_id = len(self._word_to_id) + 1
+            self._word_to_id[word] = token_id
+            self._id_to_word[token_id] = word
+        return self._word_to_id[word]
+
+    def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+        return [self._intern(word) for word in re.findall(r"\S+", text)]
+
+    def decode(
+        self,
+        token_ids: list[int],
+        skip_special_tokens: bool = True,
+    ) -> str:
+        return " ".join(
+            self._id_to_word[token_id]
+            for token_id in token_ids
+            if token_id in self._id_to_word
+        )
+
+
+class FakeEmbeddingService:
+    """Fast deterministic embedding service for pipeline/API tests."""
+
+    model_name = "fake-test-model"
+    model_version = "test"
+    model_label = "fake-test-model@test"
+
+    def __init__(self, dimension: int = 384, tokenizer=None) -> None:
+        self.dimension = dimension
+        self.tokenizer = tokenizer or WhitespaceTokenizer()
+        self.calls: list[list[str]] = []
+
+    def count_tokens(self, text: str) -> int:
+        return len(self.tokenizer.encode(text, add_special_tokens=False))
+
+    def generate_embedding(self, text: str) -> list[float]:
+        return self.generate_embeddings([text])[0]
+
+    def generate_embeddings(self, texts: list[str]) -> list[list[float]]:
+        self.calls.append(list(texts))
+        vectors: list[list[float]] = []
+        for text in texts:
+            vector = [0.0] * self.dimension
+            for index, character in enumerate(text):
+                vector[index % self.dimension] += (ord(character) % 31) / 31.0
+            norm = sum(value * value for value in vector) ** 0.5 or 1.0
+            vectors.append([value / norm for value in vector])
+        return vectors

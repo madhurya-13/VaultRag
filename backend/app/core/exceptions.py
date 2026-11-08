@@ -54,3 +54,23 @@ class NotFoundError(AppError):
 class ConflictError(AppError):
     status_code = 409
     default_detail = "Resource already exists"
+
+
+class PayloadTooLargeError(AppError):
+    status_code = 413
+    default_detail = "Uploaded file is too large"
+
+
+class UnsupportedMediaTypeError(AppError):
+    status_code = 415
+    default_detail = "Unsupported file type"
+
+
+class UnprocessableDocumentError(AppError):
+    status_code = 422
+    default_detail = "Document could not be processed"
+
+
+class ServiceUnavailableError(AppError):
+    status_code = 503
+    default_detail = "Required processing service is unavailable"

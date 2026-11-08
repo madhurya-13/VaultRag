@@ -48,3 +48,15 @@ logs/
 *.sqlite3
 pgdata/
 database/dumps/
+
+# ---------------------------------------------------------------------------
+# Private uploaded documents
+# ---------------------------------------------------------------------------
+# Local private storage must never be committed or served by a web server.
+private_documents/
+backend/private_documents/
+
+# Test storage is normally created under the OS temp directory, but keep these
+# patterns here for local runs that use a repository-relative path.
+test-documents/
+vaultrag-test-documents-*/

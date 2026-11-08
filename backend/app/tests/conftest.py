@@ -11,7 +11,10 @@ privilege boundary as production instead of accidentally running as a
 superuser.
 """
 
+import atexit
 import os
+import shutil
+import tempfile
 from pathlib import Path
 from uuid import UUID
 
@@ -19,6 +22,8 @@ from dotenv import dotenv_values
 from sqlalchemy.engine import make_url
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
+TEST_STORAGE_DIR = Path(tempfile.mkdtemp(prefix="vaultrag-test-documents-"))
+atexit.register(shutil.rmtree, TEST_STORAGE_DIR, ignore_errors=True)
 
 # Environment variables win. Otherwise honour backend/.env so a developer who
 # changed the local role passwords does not accidentally run tests against the
@@ -41,6 +46,7 @@ os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 os.environ["MIGRATION_DATABASE_URL"] = TEST_MIGRATION_DATABASE_URL
 os.environ["JWT_SECRET_KEY"] = "test-only-jwt-secret-0123456789abcdef0123456789abcdef"
 os.environ["ACCESS_TOKEN_EXPIRE_MINUTES"] = "30"
+os.environ["DOCUMENT_STORAGE_DIR"] = str(TEST_STORAGE_DIR)
 
 import pytest  # noqa: E402
 from alembic import command  # noqa: E402
@@ -114,8 +120,9 @@ def _clean_tables(migration_engine):
         connection.execute(
             text(
                 "TRUNCATE TABLE "
-                "security_audit_logs, document_permissions, documents, "
-                "user_attributes, user_roles, users, roles, organizations "
+                "security_audit_logs, document_chunks, document_ingestion_jobs, "
+                "document_permissions, documents, user_attributes, user_roles, "
+                "users, roles, organizations "
                 "RESTART IDENTITY CASCADE"
             )
         )

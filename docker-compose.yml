@@ -2,7 +2,9 @@ name: vaultrag
 
 services:
   db:
-    image: postgres:16-alpine
+    # pgvector/pgvector is PostgreSQL 16 plus the vector extension. The data
+    # directory is compatible with the official postgres:16 image.
+    image: pgvector/pgvector:pg16
     container_name: vaultrag-postgres
     restart: unless-stopped
     environment:
