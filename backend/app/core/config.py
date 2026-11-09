@@ -93,6 +93,36 @@ class Settings(BaseSettings):
         description="Below this many non-whitespace characters, a PDF is treated as image-only.",
     )
 
+    # ------------------------------------------------------------------
+    # Milestone 4: permission-aware retrieval and local generation
+    # ------------------------------------------------------------------
+    rag_top_k_default: int = Field(default=10, ge=1, le=50)
+    rag_top_k_max: int = Field(default=50, ge=1, le=50)
+    rag_context_top_n: int = Field(default=5, ge=1, le=50)
+    rag_min_similarity: float = Field(default=0.20, ge=-1.0, le=1.0)
+    rag_max_question_chars: int = Field(default=4000, ge=1, le=20000)
+    rag_max_context_tokens: int = Field(default=3000, ge=100, le=100000)
+    rag_rerank_enabled: bool = False
+    rag_reranker_model: str = Field(
+        default="cross-encoder/ms-marco-MiniLM-L-6-v2",
+        min_length=1,
+        max_length=255,
+    )
+
+    # Local Ollama runtime. No paid API key is required.
+    ollama_base_url: str = Field(
+        default="http://localhost:11434",
+        min_length=1,
+        max_length=2048,
+    )
+    ollama_model: str = Field(default="qwen2.5:3b", min_length=1, max_length=255)
+    ollama_temperature: float = Field(default=0.1, ge=0.0, le=2.0)
+    ollama_max_output_tokens: int = Field(default=512, ge=1, le=8192)
+    ollama_timeout_seconds: float = Field(default=60.0, gt=0, le=600)
+    ollama_context_window: int = Field(default=4096, ge=512, le=131072)
+    ollama_health_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
+    ollama_model_cache_seconds: float = Field(default=30.0, ge=0, le=600)
+
     @field_validator(
         "database_url",
         "test_database_url",
@@ -150,6 +180,16 @@ class Settings(BaseSettings):
             raise ValueError(
                 "CHUNK_OVERLAP_TOKENS must be smaller than CHUNK_SIZE_TOKENS."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_rag_settings(self) -> "Settings":
+        if self.rag_top_k_default > self.rag_top_k_max:
+            raise ValueError("RAG_TOP_K_DEFAULT must not exceed RAG_TOP_K_MAX.")
+        if self.rag_context_top_n > self.rag_top_k_max:
+            raise ValueError("RAG_CONTEXT_TOP_N must not exceed RAG_TOP_K_MAX.")
+        if not self.ollama_base_url.startswith(("http://", "https://")):
+            raise ValueError("OLLAMA_BASE_URL must start with http:// or https://.")
         return self
 
 

@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.database import engine, get_db
 from app.core.exceptions import AppError
-from app.routes import attributes, auth, documents, organizations, security, users
+from app.routes import attributes, auth, documents, organizations, rag, security, users
 
 settings = get_settings()
 
@@ -43,12 +43,16 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="VaultRAG API",
-    version="2.0.0",
-    summary="Permission-aware multi-tenant RAG platform - Milestone 2 authorization",
+    version="4.0.0",
+    summary="Permission-aware multi-tenant RAG platform - Milestone 4",
     description=(
-        "Secure backend foundation: tenants, users, tenant-scoped roles, JWT "
+        "Secure RAG backend: tenants, users, tenant-scoped roles, JWT "
         "authentication, centralized RBAC/ABAC document authorization, "
-        "PostgreSQL row-level security and append-only security audit logs.\n\n"
+        "PostgreSQL row-level security, permission-aware pgvector retrieval, "
+        "local Ollama generation, validated citations and append-only audit "
+        "logs.\n\n"
+        "**Security guarantee:** unauthorized document chunk text is never "
+        "selected for context construction or sent to the language model.\n\n"
         "**Authentication:** call `POST /auth/login` with email, password and "
         "tenant_id, then click **Authorize** and paste the returned "
         "`access_token`."
@@ -134,4 +138,5 @@ app.include_router(organizations.router)
 app.include_router(users.router)
 app.include_router(attributes.router)
 app.include_router(documents.router)
+app.include_router(rag.router)
 app.include_router(security.router)

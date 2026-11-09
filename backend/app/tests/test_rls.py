@@ -12,12 +12,15 @@ from sqlalchemy.exc import DBAPIError
 
 from app.core.config import get_settings
 from app.tests.helpers import (
+    FakeEmbeddingService,
     admin_bundle_with_attributes,
-    create_document,
     grant_document_permission,
+    make_pdf_bytes,
+    process_document,
     read_document,
     register_organization,
     tenant_user_with_attributes,
+    upload_pdf,
     use_tenant,
 )
 
@@ -28,6 +31,8 @@ TENANT_TABLES = (
     "user_roles",
     "documents",
     "document_permissions",
+    "document_chunks",
+    "document_ingestion_jobs",
     "user_attributes",
     "security_audit_logs",
 )
@@ -175,11 +180,32 @@ def test_no_context_or_wrong_context_denies_all_tenant_rows(client, app_engine):
         )
 
 
-def test_direct_database_access_without_context_sees_no_tenant_data(client, db, app_engine):
+def test_direct_database_access_without_context_sees_no_tenant_data(
+    client, db, app_engine, monkeypatch
+):
+    embedder = FakeEmbeddingService()
+    monkeypatch.setattr(
+        "app.services.ingestion_service.get_embedding_service",
+        lambda: embedder,
+    )
     org, admin, admin_token = admin_bundle_with_attributes(
         client, db, organization_name="Alpha Corp", email="admin@alpha.com", username="alpha_admin"
     )
-    document = create_document(client, admin_token)
+    upload = upload_pdf(
+        client,
+        admin_token,
+        make_pdf_bytes(
+            ["RLS chunk isolation policy text for direct database access verification."]
+        ),
+        filename="rls-policy.pdf",
+        document_name="RLS Policy.pdf",
+        department="HR",
+    )
+    assert upload.status_code == 201, upload.text
+    document = upload.json()
+    processed = process_document(client, admin_token, document["document_id"])
+    assert processed.status_code == 200, processed.text
+
     user, _ = tenant_user_with_attributes(
         client,
         admin_token,

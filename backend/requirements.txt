@@ -1,4 +1,4 @@
-# VaultRAG - Milestone 3 backend dependencies
+# VaultRAG - Milestone 4 backend dependencies
 # Pinned for reproducible installs. Python 3.11+ (tested on 3.12).
 
 fastapi==0.115.6
@@ -20,12 +20,12 @@ python-multipart==0.0.20
 PyJWT==2.10.1
 argon2-cffi==23.1.0
 
-# Document ingestion / embeddings
+# Document ingestion / embeddings / local LLM HTTP client
 PyMuPDF==1.24.14
 pgvector==0.3.6
 sentence-transformers==3.3.1
 torch==2.5.1
+httpx==0.28.1
 
 # Testing
 pytest==8.3.4
-httpx==0.28.1
