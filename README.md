@@ -1,14 +1,23 @@
-# VaultRAG — Permission-Aware Multi-Tenant RAG System
+# VaultRAG - Permission-Aware Multi-Tenant RAG System
 
-> **Milestone 3: Secure PDF ingestion, token-aware chunking, local embeddings and pgvector storage**
+> **Milestone 4: Permission-aware pgvector retrieval, local Ollama generation and validated citations**
 
-Multi-tenant platform where organizations share one application while users,
-roles, documents, chunks, embeddings and audit trails remain isolated.
+VaultRAG is a multi-tenant platform where organizations share one application
+while users, roles, documents, chunks, embeddings, retrieval context, generated
+answers and audit trails remain isolated.
 
-This repository contains the **Milestone 3 backend**. Retrieval, similarity
-search, LLM calls, chatbot features and the frontend are deliberately out of
-scope. Milestone 3 adds secure ingestion and vector-ready storage; it does not
-expose a search endpoint.
+This repository contains the **Milestone 4 backend**. It adds:
+
+- a permission-aware retrieval pipeline over the Milestone 3 pgvector chunks;
+- local generation through Ollama, with no paid LLM API;
+- backend-generated source identifiers and citation validation;
+- security audit events for retrieval, generation and citation decisions;
+- an optional HNSW vector index, benchmarked before inclusion.
+
+The frontend and a production background-worker queue remain out of scope.
+
+**Primary security guarantee:** unauthorized document chunk text is never
+selected for context construction and is never sent to the language model.
 
 Detailed threat model and design decisions: [docs/SECURITY.md](docs/SECURITY.md)
 
@@ -16,16 +25,16 @@ Detailed threat model and design decisions: [docs/SECURITY.md](docs/SECURITY.md)
 
 ## What is included
 
-### Milestone 1 — tenants, identity and RBAC
+### Milestone 1 - tenants, identity and RBAC
 
-- FastAPI, SQLAlchemy 2.0, PostgreSQL 16, Alembic
+- FastAPI, SQLAlchemy 2.0, PostgreSQL 16 and Alembic
 - Organization registration and tenant-owned roles:
   `ADMIN`, `HR`, `FINANCE`, `ENGINEERING`, `EMPLOYEE`
 - Argon2id passwords and JWT authentication
 - Authentication context reloaded from PostgreSQL on every request
 - Tenant-safe composite foreign keys
 
-### Milestone 2 — authorization and audit
+### Milestone 2 - authorization and audit
 
 - Centralized authorization engine (routes do not scatter role checks)
 - Exact-match document permissions for roles or individual users
@@ -39,23 +48,41 @@ Detailed threat model and design decisions: [docs/SECURITY.md](docs/SECURITY.md)
   (`vaultrag_migrator`)
 - Append-only security audit log with request-ID correlation
 
-### Milestone 3 — ingestion and vector-ready storage
+### Milestone 3 - ingestion and vector-ready storage
 
 - Multipart PDF upload with server-derived tenant, uploader, hash, storage key,
   processing status and permissions
-- Private local storage behind a storage abstraction that can be replaced by a
-  private S3-compatible backend later
-- PyMuPDF validation and page-level text extraction
+- Private local storage behind a replaceable storage abstraction
+- PyMuPDF validation and page-level extraction
 - Conservative text cleaning
 - Token-aware sliding-window chunking with page-range tracking
 - Local `sentence-transformers/all-MiniLM-L6-v2` embeddings (384 dimensions)
 - pgvector `VECTOR(384)` storage
-- Per-chunk security-metadata snapshots derived from authoritative document
-  rows and current `document_permissions`
-- Ingestion job tracking with concurrency guards and safe failure handling
+- Ingestion jobs with concurrency guards and safe failure handling
 - Upload, process, status and admin-only chunk-inspection APIs
-- **136 automated tests**, including real PostgreSQL RLS/constraint tests and
-  one real local embedding-model integration test
+
+### Milestone 4 - permission-aware RAG
+
+- `POST /rag/ask` with a strict request schema that rejects `tenant_id`
+- Three-stage retrieval:
+  1. SQL/pgvector candidate search selects IDs and metadata only;
+  2. current RBAC/ABAC/document permissions authorize each candidate;
+  3. text is fetched only for authorized chunk IDs.
+- Tenant filtering in SQL and PostgreSQL RLS on every retrieval query
+- Matching embedding-model label enforced in SQL, so vectors from different
+  embedding spaces are never mixed
+- Current `document_permissions` checks, including expiry and revocation, on
+  every request; `document_chunks.metadata` is never trusted for authorization
+- Cosine threshold, deduplication, top-N reranking and a token-bounded context
+- Backend-generated source IDs (`S1`, `S2`, ...) and page/document attribution
+- System/user prompt separation and prompt-injection containment
+- Local Ollama generation (`qwen2.5:3b` by default)
+- Authoritative citation validation: unsupported source IDs are removed; if no
+  valid citation remains, a safe unverifiable response is returned
+- `GET /rag/health` and stateless, user-scoped `GET /rag/history`
+- Optional HNSW cosine index with benchmark evidence
+- **183 passed, 1 skipped** in the full suite; the skipped test is the optional
+  real local Ollama integration test.
 
 ---
 
@@ -83,15 +110,68 @@ flowchart LR
     CHUNK --> EMBED[Local MiniLM embeddings]
     EMBED --> DB
 
+    API --> RAG[Permission-aware RAG]
+    RAG --> RETRIEVE[SQL + pgvector candidates<br/>IDs and metadata only]
+    RETRIEVE --> DB
+    RETRIEVE --> AUTHZ
+    AUTHZ --> TEXT[Fetch text for authorized IDs only]
+    TEXT --> CONTEXT[Bounded source context]
+    CONTEXT --> LLM[Local Ollama]
+    LLM --> CITE[Validate citations]
+    CITE --> API
+
     DB --> RLS[FORCE RLS<br/>tenant_isolation]
-    DB --> VEC[pgvector VECTOR 384]
+    DB --> VEC[pgvector VECTOR 384<br/>optional HNSW]
 ```
 
 Every ordinary document operation flows through
 `app/services/authorization.py`. RBAC, ABAC, document grants and RLS are
-separate controls that must all agree before data is returned. Upload and
-ingestion are administrative capabilities, but they still run inside the
-authenticated tenant and every storage query is constrained by RLS.
+separate controls that must all agree before protected data is returned. RAG
+adds a retrieval-specific ordering on top of that engine.
+
+### RAG request flow
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant API as FastAPI /rag/ask
+    participant DB as PostgreSQL + RLS
+    participant Z as Authorization engine
+    participant L as Ollama
+
+    U->>API: question + top_k (no tenant_id)
+    API->>DB: short transaction; set tenant context
+    API->>DB: query candidates (no chunk text)
+    DB-->>API: chunk IDs, page ranges, document security metadata
+    API->>Z: current roles, attributes, document permissions
+    Z-->>API: allow/deny per document
+    API->>DB: fetch text only for authorized chunk IDs
+    DB-->>API: authorized text
+    API->>API: threshold, dedupe, top-N, build S1..Sn context
+    API->>L: system prompt + untrusted reference context
+    L-->>API: answer with [S#] markers
+    API->>API: validate citations against backend source list
+    API->>DB: audit retrieval, generation and citation events
+    API-->>U: answer + backend sources
+```
+
+### Security order
+
+The retrieval pipeline never reverses these steps:
+
+1. validate the authenticated caller and tenant;
+2. generate a query embedding with the ingestion model label;
+3. obtain SQL candidates with tenant, active/`COMPLETED`, model-label and
+   current unexpired `READ` prefilters;
+4. re-evaluate current RBAC, exact document permission, expiry/revocation and
+   ABAC with the central engine;
+5. fetch text only for authorized chunk IDs;
+6. rerank the authorized set and construct bounded context;
+7. call Ollama outside the retrieval transaction;
+8. validate citations against the backend source list;
+9. record audit events and return the safe response.
+
+If any step fails closed, no unauthorized text is selected.
 
 ---
 
@@ -157,7 +237,7 @@ Core variables:
 | `TEST_MIGRATION_DATABASE_URL` | Pytest schema/migration connection |
 | `JWT_SECRET_KEY` | Token signing secret, at least 32 characters |
 
-Milestone 3 ingestion variables:
+Milestone 3 ingestion and embedding variables:
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -174,87 +254,117 @@ Milestone 3 ingestion variables:
 | `CHUNK_MAX_TOKENS` | `700` | Hard upper bound. |
 | `PDF_MIN_EXTRACTABLE_CHARS` | `50` | Below this, a PDF is treated as image-only. |
 
-Settings validation rejects an embedding dimension other than 384 and enforces
-`CHUNK_MIN_TOKENS <= CHUNK_SIZE_TOKENS <= CHUNK_MAX_TOKENS` and
-`CHUNK_OVERLAP_TOKENS < CHUNK_SIZE_TOKENS`.
+Milestone 4 retrieval and generation variables:
 
-### 3. Apply migrations and start the API
+| Variable | Default | Purpose |
+|---|---|---|
+| `RAG_TOP_K_DEFAULT` | `10` | Default candidate count; maximum is 50. |
+| `RAG_TOP_K_MAX` | `50` | Server-side upper bound for client `top_k`. |
+| `RAG_CONTEXT_TOP_N` | `5` | Authorized chunks sent to context after reranking. |
+| `RAG_MIN_SIMILARITY` | `0.20` | Cosine-similarity policy gate, not a confidence probability. |
+| `RAG_MAX_QUESTION_CHARS` | `4000` | Maximum accepted question length. |
+| `RAG_MAX_CONTEXT_TOKENS` | `3000` | Context token budget (tokenizer-based when available). |
+| `RAG_RERANK_ENABLED` | `false` | Optional local cross-encoder reranking. |
+| `RAG_RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Optional reranker model. |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Local Ollama endpoint. |
+| `OLLAMA_MODEL` | `qwen2.5:3b` | Local generation model. |
+| `OLLAMA_TEMPERATURE` | `0.1` | Low temperature for extraction-style answers. |
+| `OLLAMA_MAX_OUTPUT_TOKENS` | `512` | Maximum generated tokens. |
+| `OLLAMA_TIMEOUT_SECONDS` | `60` | Generation timeout. |
+| `OLLAMA_CONTEXT_WINDOW` | `4096` | Ollama context window. |
+| `OLLAMA_HEALTH_TIMEOUT_SECONDS` | `2` | Health-check timeout. |
+| `OLLAMA_MODEL_CACHE_SECONDS` | `30` | Model-availability cache. |
+
+Settings validation rejects an embedding dimension other than 384, enforces
+chunk-size relationships, rejects `RAG_TOP_K_DEFAULT > RAG_TOP_K_MAX`,
+`RAG_CONTEXT_TOP_N > RAG_TOP_K_MAX`, and requires an HTTP(S) Ollama URL.
+
+### 3. Install and run Ollama
+
+VaultRAG uses a local Ollama server. No API key or paid model is required.
+
+Native Windows install:
 
 ```powershell
+# Install Ollama (Windows)
+winget install --id Ollama.Ollama
+
+# Pull the configured model
+ollama pull qwen2.5:3b
+
+# The desktop app normally starts the server; otherwise run:
+ollama serve
+```
+
+Docker alternative (used for the real integration test in this repository):
+
+```powershell
+docker run -d --name vaultrag-ollama -p 11434:11434 ollama/ollama:latest
+docker exec vaultrag-ollama ollama pull qwen2.5:3b
+
+# Confirm the server and model are available
+docker exec vaultrag-ollama ollama list
+```
+
+The container listens on `http://localhost:11434`, which matches the default
+`OLLAMA_BASE_URL`. Keep it running while the API or the opt-in integration test
+is active.
+
+Verify from the API:
+
+```powershell
+curl.exe http://127.0.0.1:8000/rag/health `
+  -H "Authorization: Bearer $TOKEN"
+```
+
+The health endpoint reports `postgresql`, `pgvector`, `embedding_model` and
+`ollama` components without exposing prompts, chunk text or credentials. A
+missing Ollama process or model produces a safe `503` on `/rag/ask`, never a
+fabricated answer.
+
+### 4. Apply migrations and start the API
+
+```powershell
+cd backend
 alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
 - Swagger: <http://127.0.0.1:8000/docs>
 - Health: <http://127.0.0.1:8000/health>
+- RAG health: <http://127.0.0.1:8000/rag/health>
 
-### 4. Run the tests
+### 5. Run the tests
 
 ```powershell
 cd C:\Users\Madhurya\OneDrive\Desktop\VaultRag\backend
 pytest -q
 ```
 
-Expected: `136 passed`.
+Expected: **183 passed, 1 skipped** (the skipped test is the optional real
+Ollama integration test). With the Ollama container running and
+`OLLAMA_INTEGRATION=1`, the same command reports **184 passed**.
 
-The test suite drops and recreates the schema in the database configured by
+The suite drops and recreates the schema in the database configured by
 `TEST_DATABASE_URL`. It refuses to run unless the database name contains
-`test`. Tests run application traffic as `vaultrag_app` (NOSUPERUSER,
+`test`. Application traffic runs as `vaultrag_app` (NOSUPERUSER,
 NOBYPASSRLS) and migrations as `vaultrag_migrator`, so RLS is exercised through
 the real privilege boundary.
 
-The first real-model test downloads/caches
-`sentence-transformers/all-MiniLM-L6-v2` (roughly 90 MB). Later runs use the
-Hugging Face cache. Most tests inject deterministic fake embeddings and never
-load Torch.
-
----
-
-## First administrator and ABAC bootstrap
-
-There is no public endpoint that creates an administrator.
+Most RAG tests inject a deterministic fake embedding service and a recording
+mock LLM. One existing test loads the real local MiniLM embedding model. The
+real Ollama test is opt-in:
 
 ```powershell
-$org = Invoke-RestMethod -Method Post `
-  -Uri "http://127.0.0.1:8000/organizations/register" `
-  -ContentType "application/json" `
-  -Body (@{ organization_name = "TechNova" } | ConvertTo-Json)
-
-python -m app.scripts.bootstrap_admin `
-  --tenant-id $org.tenant_id `
-  --username admin `
-  --email admin@technova.com
+$env:OLLAMA_INTEGRATION = "1"
+pytest -q app/tests/test_ollama_integration.py
 ```
 
-The CLI prompts for the password securely. Public signup creates an **inactive,
-role-less** account; an administrator must activate it and assign a role.
-
-An administrator cannot raise their **own** clearance level. Bootstrap the first
-administrator's ABAC attributes with a second administrator or an operator SQL
-session:
-
-1. Admin A creates Admin B with role `ADMIN`.
-2. Admin B logs in and calls
-   `PUT /users/{A}/attributes` with department, clearance and employment status.
-3. Admin A logs in and sets Admin B's attributes.
-
-Example body:
-
-```json
-{
-  "attributes": {
-    "department": "ADMIN",
-    "clearance_level": "5",
-    "employment_status": "ACTIVE"
-  }
-}
-```
-
-A user with no attributes is denied by ABAC. This is intentional fail-closed
-behaviour, including for `ADMIN`. Upload and ingestion capabilities are
-administrative, but document reads, permission changes, status reads and
-admin chunk inspection still go through the central authorization engine and
-its ABAC checks.
+If Ollama is not running or the configured model is missing, that test skips
+with an actionable message. The rest of the suite remains deterministic. The
+real test was executed successfully against the official `ollama/ollama`
+container with `qwen2.5:3b`; the normal suite still skips it unless explicitly
+enabled.
 
 ---
 
@@ -265,7 +375,7 @@ its ABAC checks.
 | `POST` | `/organizations/register` | Public | Create tenant + default roles |
 | `GET` | `/organizations/me` | Bearer | Current tenant |
 | `POST` | `/auth/register` | Public | Pending signup |
-| `POST` | `/auth/login` | Public | Email + password + tenant → JWT |
+| `POST` | `/auth/login` | Public | Email + password + tenant id -> JWT |
 | `GET` | `/auth/me` | Bearer | Current identity + roles |
 | `GET` | `/users` | ADMIN | List users in own tenant |
 | `POST` | `/users` | ADMIN | Create user + assign roles |
@@ -279,14 +389,17 @@ its ABAC checks.
 | `POST` | `/documents/upload` | ADMIN (`CREATE_DOCUMENT`) | Upload a PDF to private storage |
 | `POST` | `/documents/{id}/process` | ADMIN (`PROCESS_DOCUMENT`) | Extract, chunk, embed and store |
 | `GET` | `/documents/{id}/status` | Bearer with `READ` | Ingestion status and latest job |
-| `GET` | `/documents/{id}/chunks` | ADMIN (`VIEW_CHUNKS` + document `READ`) | Inspect stored chunks and metadata |
+| `GET` | `/documents/{id}/chunks` | ADMIN (`VIEW_CHUNKS` + document `READ`) | Inspect stored chunks |
 | `GET` | `/documents` | Bearer | List documents the caller may `READ` |
 | `GET` | `/documents/{id}` | Bearer | Read one authorized document |
 | `GET` | `/documents/{id}/access-check?action=READ` | Bearer | Evaluate one action |
 | `POST` | `/documents/{id}/permissions` | ADMIN or grantee | Grant exact action |
 | `DELETE` | `/documents/{id}/permissions/{pid}` | ADMIN or grantee | Revoke permission |
+| `POST` | `/rag/ask` | Bearer | Permission-aware question answering |
+| `GET` | `/rag/health` | Bearer | Operational RAG dependency status |
+| `GET` | `/rag/history` | Bearer | Caller-scoped history (stateless) |
 | `GET` | `/security/audit-logs` | ADMIN | Tenant-scoped audit events |
-| `GET` | `/health` | Public | Health check |
+| `GET` | `/health` | Public | Basic health check |
 
 Login body:
 
@@ -301,128 +414,345 @@ Login body:
 JWT claims: `sub`, `tenant_id`, `roles`, `type`, `iat`, `exp`, `jti`.
 In Swagger, click **Authorize** and paste the token.
 
-### Upload
+### Permission-aware question answering
 
-`POST /documents/upload` accepts **multipart form data** only:
-
-| Form field | Required | Notes |
-|---|---|---|
-| `document_name` | yes | 1–255 characters |
-| `department` | yes | Must be an allowed server-side department |
-| `classification` | yes | `PUBLIC`, `INTERNAL`, `CONFIDENTIAL` or `RESTRICTED` |
-| `file` | yes | A `.pdf` with an allowed PDF content type |
-
-```powershell
-curl.exe -X POST "http://127.0.0.1:8000/documents/upload" `
-  -H "Authorization: Bearer $TOKEN" `
-  -F "document_name=Security Policy" `
-  -F "department=ENGINEERING" `
-  -F "classification=INTERNAL" `
-  -F "file=@policy.pdf;type=application/pdf"
-```
-
-The server derives, and never accepts from the client:
-
-- `tenant_id`
-- `uploaded_by`
-- `file_hash`
-- `file_size`
-- `storage_path`
-- `processing_status`
-- `total_pages`, `total_chunks`, `embedding_model`
-- initial permission grants
-- `is_active` and document type
-
-Unknown form fields are ignored; the service never reads security metadata from
-the request. A successful upload returns `201` with
-`processing_status = "UPLOADED"`.
-
-Upload validation includes:
-
-- filename extension `.pdf`;
-- declared content type in the PDF allowlist;
-- streamed size limit and non-empty file;
-- real PDF content, not a renamed text file;
-- not encrypted or password-protected;
-- at least one page;
-- extractable text above `PDF_MIN_EXTRACTABLE_CHARS`;
-- tenant-scoped duplicate SHA-256 check.
-
-Encrypted, malformed and image-only PDFs are rejected at upload with safe
-`422` errors. A duplicate hash in the same tenant returns `409`; the same bytes
-may exist in another tenant.
-
-### Process
-
-`POST /documents/{id}/process` runs synchronously in this milestone:
-
-- only `ADMIN` has `PROCESS_DOCUMENT`;
-- the document must belong to the caller's tenant (RLS);
-- only `UPLOADED` or `FAILED` documents are processable;
-- the document must have a private stored file;
-- an active `PENDING`/`PROCESSING` job blocks a second run;
-- a document with existing chunks cannot be reprocessed without cleanup;
-- `COMPLETED` and `ARCHIVED` documents return `409`.
-
-The response is the same status shape as `GET /documents/{id}/status`.
-
-### Status
-
-`GET /documents/{id}/status` requires ordinary document `READ` authorization
-and returns:
+`POST /rag/ask` accepts only the question and retrieval breadth:
 
 ```json
 {
-  "document_id": "...",
-  "processing_status": "COMPLETED",
-  "total_pages": 6,
-  "total_chunks": 2,
-  "embedding_model": "sentence-transformers/all-MiniLM-L6-v2@main",
-  "file_size": 123456,
-  "job_id": "...",
-  "job_status": "COMPLETED",
-  "error_code": null,
-  "error_message": null,
-  "started_at": "...",
-  "completed_at": "...",
-  "updated_at": "..."
+  "question": "What is the annual leave policy?",
+  "top_k": 10
 }
 ```
 
-Failures expose only a stable error code and safe message. Extracted text and
-exception internals are never written to the job row.
+`top_k` defaults to 10 and is bounded to 1-50. `tenant_id`, roles, user ids,
+source ids and document filters are **not accepted**; unknown fields are
+rejected with `422` by the strict Pydantic model. The tenant and identity always
+come from the authenticated server-side context.
 
-### Chunk inspection
+Successful response:
 
-`GET /documents/{id}/chunks` is an **admin-only debug endpoint** guarded by
-`VIEW_CHUNKS` and normal document `READ` authorization (including ABAC). It
-returns chunks ordered by `chunk_index`, including `chunk_text`, page range and
-the JSONB metadata snapshot. It deliberately does **not** return the embedding
-vector.
+```json
+{
+  "answer": "Employees receive 18 days of annual leave each year [S1].",
+  "sources": [
+    {
+      "document_id": "2ed1...",
+      "document_name": "HR Policy.pdf",
+      "chunk_id": "b021...",
+      "page_start": 1,
+      "page_end": 1
+    }
+  ],
+  "retrieved_chunks": 1,
+  "model": "qwen2.5:3b"
+}
+```
 
-The endpoint is intended for ingestion verification, not for production search.
-Retrieval and similarity search are out of scope for this milestone.
+Source metadata always comes from the backend's authorized chunk records. The
+model's document names, page numbers or source identifiers are never trusted.
 
-### Document response extension
+Safe no-context response:
 
-`GET /documents` and `GET /documents/{id}` now include:
+```json
+{
+  "answer": "I could not find sufficiently relevant information in the documents you are authorized to access.",
+  "sources": [],
+  "retrieved_chunks": 0,
+  "model": null
+}
+```
 
-- `file_hash`
-- `file_size`
-- `processing_status`
-- `total_pages`
-- `total_chunks`
-- `embedding_model`
+If the model produces no valid citation after validation:
 
-`storage_path` is intentionally never exposed through the API.
+```json
+{
+  "answer": "I could not produce a verifiable answer from the accessible documents.",
+  "sources": [],
+  "retrieved_chunks": 0,
+  "model": "qwen2.5:3b"
+}
+```
 
-Legacy Milestone 2 metadata-only documents remain readable, but they cannot be
-processed because they have no stored file. `/documents/{id}/process` returns
-`422` for them.
+Controlled failures:
+
+| Situation | HTTP |
+|---|---|
+| Question empty or too long | `400` |
+| `top_k` outside 1-50 | `422` from schema, or `400` at the service boundary |
+| Embedding model unavailable/invalid vector | `503` |
+| Retrieval failure | `503` |
+| Ollama unreachable, timeout, missing model or malformed response | `503` |
+| Unknown request field such as `tenant_id` | `422` |
+
+### RAG health
+
+`GET /rag/health` returns a safe component map:
+
+```json
+{
+  "status": "degraded",
+  "components": {
+    "postgresql": {"status": "ok", "detail": null},
+    "pgvector": {"status": "ok", "detail": "pgvector 0.8.7"},
+    "embedding_model": {"status": "configured", "detail": "sentence-transformers/all-MiniLM-L6-v2@main"},
+    "ollama": {"status": "unavailable", "detail": "qwen2.5:3b"}
+  }
+}
+```
+
+`embedding_model` is `configured` until the lazy model is loaded, then `ready`.
+The endpoint never returns secrets, prompts or chunk text.
+
+### RAG history
+
+`GET /rag/history` is authenticated and caller-scoped. Milestone 4 has no
+conversation persistence table, so it returns:
+
+```json
+{"items": [], "persistent": false}
+```
+
+There is no user or tenant query parameter. Supplying unrelated query
+parameters cannot retrieve another user's history.
 
 ---
 
-## Ingestion workflow
+## Retrieval and authorization details
+
+### Stage 1: SQL and pgvector candidates without text
+
+Implemented in `app/services/vector_retrieval.py`.
+
+The candidate query selects only:
+
+- chunk id, document id, chunk index and page range;
+- cosine distance;
+- document name, department, classification, clearance requirement, active
+  status, processing status and embedding model label.
+
+It deliberately does **not** select `chunk_text`. Its SQL predicates require:
+
+- `document_chunks.tenant_id = authenticated tenant`;
+- `documents.tenant_id = authenticated tenant`;
+- `documents.is_active = true`;
+- `documents.processing_status = 'COMPLETED'`;
+- `documents.embedding_model = query model label`;
+- for non-admin callers, an active, unexpired `READ` grant to the user or one
+  of the caller's current roles.
+
+RLS remains the database-level boundary. Explicit tenant predicates are
+defence in depth, not a replacement for RLS.
+
+### Stage 2: current authorization
+
+Implemented in `app/services/retrieval_authorization.py`.
+
+The code loads document metadata with column pruning and calls the existing
+Milestone 2 central engine (`authorize_loaded_document`) for every candidate
+document. The engine checks:
+
+- trusted user and organization state;
+- tenant match;
+- document active state;
+- ADMIN implicit document capability or exact current `READ` permission;
+- permission expiry and soft revocation;
+- ABAC department, employment status and clearance.
+
+The JSONB snapshot on `document_chunks.metadata` is never consulted. Revoking a
+permission after ingestion takes effect on the next request even though the
+historical chunk snapshot still contains the old role.
+
+Denied candidate documents are audited with action `RETRIEVAL_READ` and decision
+`DENY`, without chunk text.
+
+### Stage 3: text fetch gate
+
+`fetch_chunk_texts` is called only with chunk IDs that survived stage 2. If the
+authorized set is empty, no text query occurs and the LLM is never called.
+
+### Reranking and context
+
+Implemented in `app/services/reranking.py` and
+`app/services/context_builder.py`.
+
+- Cosine similarity is `1 - pgvector cosine distance`.
+- Candidates below `RAG_MIN_SIMILARITY` are dropped.
+- Duplicate chunk IDs and duplicate normalized text from the same document are
+  removed.
+- The authorized set is ordered and limited to `RAG_CONTEXT_TOP_N` (default 5).
+- An optional local cross-encoder can reorder the same authorized set; it can
+  never add documents. On reranker failure, deterministic cosine ordering is
+  retained.
+- Context blocks contain backend source id, document name, document id, chunk
+  id, page range and text.
+- The context is token-bounded; an oversized source is truncated or skipped
+  rather than exceeding the budget.
+
+### Prompt and prompt injection
+
+Implemented in `app/services/prompt_builder.py`.
+
+- System instructions and retrieved context are separate chat messages.
+- Retrieved text is explicitly labelled untrusted reference data.
+- Document text cannot close the `<retrieved_context>` delimiter; delimiter-like
+  strings are neutralized.
+- The system prompt requires citations, forbids invented source ids/pages/facts
+  and requires an explicit abstention when evidence is insufficient.
+- Authorization is the primary defense: an unauthorized chunk never reaches the
+  prompt at all.
+
+### Citations
+
+Implemented in `app/services/citation_service.py`.
+
+- The backend creates source ids `S1`, `S2`, ... for the context it actually
+  built.
+- The model answer is scanned for bracketed source ids.
+- Valid ids are preserved; invalid/fabricated ids are removed.
+- If a bracket group mixes valid and invalid ids, only valid ids remain.
+- If no valid citation remains, the service returns the safe unverifiable
+  answer and no sources.
+- Returned sources are always the backend `ContextSource` objects, in canonical
+  source-id order.
+
+Citation validation proves that an answer points at context the user was
+authorized to receive. It does **not** prove that every generated sentence is
+factually supported; see limitations.
+
+### Transaction boundaries
+
+1. Authentication and authorization read the current user, roles, attributes
+   and permissions.
+2. `/rag/ask` commits the authentication read transaction before a potentially
+   slow local LLM call.
+3. Retrieval, authorization, text fetch and the retrieval audit event use a
+   short dedicated transaction with tenant context.
+4. Ollama generation happens outside the retrieval transaction.
+5. Query start, LLM start, retrieval counts, LLM completion/failure and citation
+   validation are audited with safe reasons only. Question text and chunk text
+   are never written to audit rows.
+
+### Health and failure behavior
+
+- Ollama is checked through `/api/tags`; the configured model must be present.
+- `/api/chat` is called with low temperature and a bounded output length.
+- Timeouts, connection errors, non-200 responses, missing models and malformed
+  responses become safe `503` errors.
+- Embedding-service failures and invalid vectors become safe `503` errors.
+- If context is empty after authorization/reranking, the service returns the
+  no-context response and does not call Ollama.
+- If the LLM fails, no answer is fabricated.
+
+---
+
+## Database schema
+
+Migrations:
+
+- `1f07b971535a_milestone3_ingestion_schema.py` - ingestion and chunks
+- `4e8a1c2b7d90_add_hnsw_vector_index.py` - optional HNSW cosine index
+
+### `documents` (Milestone 3 extension)
+
+Important columns include `file_hash`, `storage_path`, `file_size`,
+`processing_status`, `total_pages`, `total_chunks` and `embedding_model`.
+`storage_path` is never exposed through the API.
+
+### `document_chunks`
+
+- `chunk_id` UUID primary key
+- `tenant_id`, `document_id` - composite tenant-safe foreign key
+- `chunk_index`, `chunk_text`
+- `embedding VECTOR(384)`
+- `page_start`, `page_end`
+- `metadata JSONB` - ingestion snapshot only, never authorization truth
+- unique `(tenant_id, document_id, chunk_index)`
+- tenant/document index and metadata GIN index
+- HNSW cosine index `ix_document_chunks_embedding_hnsw`
+  (`m = 16`, `ef_construction = 64`)
+
+The HNSW index is a performance aid. It does not filter tenants or permissions;
+those predicates remain in SQL and RLS. The index is optional at the
+application level but included in the default schema after the benchmark below.
+
+### `document_ingestion_jobs`
+
+Tracks `PENDING`, `PROCESSING`, `COMPLETED` and `FAILED` jobs, safe error codes
+and counters. A partial unique index prevents concurrent active jobs for the
+same document.
+
+### RLS, grants and pgvector
+
+- `document_chunks` and `document_ingestion_jobs` have `ENABLE` + `FORCE ROW
+  LEVEL SECURITY` and the fail-closed `tenant_isolation` policy.
+- `vaultrag_app` receives `SELECT, INSERT` on chunks and `SELECT, INSERT, UPDATE`
+  on ingestion jobs. It cannot run DDL and owns no tables.
+- pgvector is installed in the `extensions` schema; both roles have `USAGE` and
+  a `search_path` that includes it.
+
+---
+
+## Authorization model
+
+### RBAC - role capabilities
+
+RBAC controls administrative capabilities, not ordinary document content:
+
+| Capability | ADMIN | Other roles |
+|---|---|---|
+| `MANAGE_USERS` | yes | no |
+| `MANAGE_ROLES` | yes | no |
+| `CREATE_DOCUMENT` | yes | no |
+| `PROCESS_DOCUMENT` | yes | no |
+| `VIEW_CHUNKS` | yes | no |
+| `MANAGE_ATTRIBUTES` | yes | no |
+| `VIEW_AUDIT_LOGS` | yes | no |
+
+ADMIN also has an implicit tenant-wide document capability for `READ`, `UPDATE`,
+`DELETE` and `MANAGE_PERMISSIONS`. That bypass does **not** bypass ABAC:
+clearance and employment checks still apply, and RAG still requires current
+document authorization before text selection.
+
+### Document permissions
+
+A grant targets exactly one subject: a tenant-owned role or one user. Permission
+types are exact-match `READ`, `UPDATE`, `DELETE` and `MANAGE_PERMISSIONS`.
+`MANAGE_PERMISSIONS` does not imply `READ`. Permissions can expire and revocation
+is soft, effective on the next request.
+
+### ABAC
+
+Required attributes are department, clearance level (0-5) and employment status.
+Missing or malformed attributes deny. Employment status must be `ACTIVE`.
+Department must match unless cross-department is allowed or the caller is ADMIN.
+Clearance must meet the document requirement.
+
+Classification floors:
+
+| Classification | Minimum clearance |
+|---|---|
+| `PUBLIC` | 0 |
+| `INTERNAL` | 1 |
+| `CONFIDENTIAL` | 3 |
+| `RESTRICTED` | 4 |
+
+### PostgreSQL RLS
+
+- Both database roles are `NOSUPERUSER` and `NOBYPASSRLS`.
+- `vaultrag_app` owns no tables and cannot run DDL.
+- `vaultrag_migrator` owns the schema and runs Alembic.
+- Every tenant table has `ENABLE` and `FORCE ROW LEVEL SECURITY`.
+- The `tenant_isolation` policy uses `security.current_tenant_id()` and fails
+  closed when context is missing or malformed.
+- The tenant context is transaction-local and cleared by commit or rollback, so
+  it cannot leak through the connection pool.
+
+Application-level tenant filters remain as defence in depth.
+
+---
+
+## Ingestion workflow (Milestone 3)
 
 ```mermaid
 sequenceDiagram
@@ -447,438 +777,126 @@ sequenceDiagram
     API->>API: local embeddings + validation
     API->>DB: insert chunks + totals + job COMPLETED (one transaction)
     API-->>Admin: 200 COMPLETED
-
-    alt any failure after claim
-        API->>DB: rollback chunk/total transaction
-        API->>DB: separate transaction records FAILED + safe error
-        API-->>Admin: safe 4xx/5xx
-    end
 ```
 
-### Transaction boundaries
+Processing is synchronous in this milestone. A partial unique index plus a row
+lock prevents concurrent processing. Completed documents cannot be reprocessed
+without a future cleanup path.
 
-1. **Claim** — lock the document row with `SELECT ... FOR UPDATE`, reject
-   inactive/unprocessable documents and active jobs, create a `PROCESSING` job,
-   set the document to `PROCESSING`, audit `INGESTION_START`, commit. The claim
-   is committed before expensive parsing/embedding so a second request sees the
-   active job.
-2. **Process** — outside any long transaction: validate the private file, extract
-   pages, clean text, chunk, embed and build the permission snapshot. No database
-   locks are held during CPU-heavy work.
-3. **Finalise** — one transaction inserts every chunk, updates
-   `total_pages`, `total_chunks`, `embedding_model`, sets the document
-   `COMPLETED`, marks the job `COMPLETED`, and audits `INGESTION_COMPLETE`.
-   Chunks and status therefore commit or roll back together.
-4. **Failure** — the finalise transaction rolls back. A separate short
-   transaction sets the document/job to `FAILED`, stores a safe error code and
-   message, resets totals to zero, and audits `INGESTION_FAIL`. A document is
-   never left `COMPLETED` with a partial chunk set.
+### PDF validation and extraction
 
-### Concurrency and reprocessing
-
-Two guards prevent concurrent processing:
-
-- a row lock during claim;
-- a partial unique index on `document_ingestion_jobs (tenant_id, document_id)`
-  where `status IN ('PENDING', 'PROCESSING')`.
-
-A second claim receives `409 Conflict`. This is tested with two overlapping
-service calls: one blocks inside embedding generation while the second is
-rejected.
-
-Reprocessing is allowed only from `UPLOADED` or `FAILED` and only when no chunks
-exist. Completed and archived documents are rejected. This milestone does not
-provide a cleanup endpoint for deleting old chunks.
-
-### Status model
-
-`documents.processing_status`:
-
-- `UPLOADED` — file stored, waiting for processing;
-- `PROCESSING` — an active job owns the document;
-- `COMPLETED` — all chunks, totals and job state committed;
-- `FAILED` — safe failure recorded; retry is allowed;
-- `ARCHIVED` — not processable in this milestone.
-
-`document_ingestion_jobs.status`: `PENDING`, `PROCESSING`, `COMPLETED`,
-`FAILED`.
-
----
-
-## PDF validation and extraction
-
-Implemented in `app/services/document_processor.py` with PyMuPDF.
-
-- Opens with `filetype="pdf"`; PyMuPDF exceptions become
-  `MALFORMED_PDF`.
-- Requires `document.is_pdf`, at least one page, and a loadable first page.
-- Rejects `needs_pass` / `is_encrypted` PDFs with
-  `ENCRYPTED_PDF_UNSUPPORTED`.
-- Extracts page by page with `page.get_text("text", sort=True)`, preserving the
-  original 1-based page number.
-- Records empty pages without inventing text.
-- Counts non-whitespace characters. Below
-  `PDF_MIN_EXTRACTABLE_CHARS` (default 50), the PDF is treated as image-only and
-  fails with `OCR_UNSUPPORTED`.
-- Missing files and malformed/truncated PDFs fail with safe codes.
+- PyMuPDF opens with `filetype="pdf"`.
+- Encrypted/password-protected PDFs are rejected.
+- At least one page and extractable text above `PDF_MIN_EXTRACTABLE_CHARS` are
+  required.
+- Image-only/scanned PDFs are rejected because OCR is not implemented.
 - Extracted text is never logged.
 
-Upload performs the extraction once for early validation and then discards the
-text. Processing re-extracts from the private file. This costs CPU but gives
-immediate feedback and prevents image-only files from entering the queue.
+### Chunking and embeddings
 
-OCR is not implemented. Scanned/image-only PDFs are rejected rather than
-silently stored with empty embeddings.
+- Token-aware sliding windows (default 500 tokens, 100 overlap, hard max 700).
+- Page ranges are tracked per chunk.
+- Local `sentence-transformers/all-MiniLM-L6-v2`, 384 dimensions, normalized.
+- Output shape, exact dimension and finite values are validated before insert.
+- The model label (`<model>@<version>`) is stored on the document and chunks so
+  retrieval cannot mix embedding spaces.
 
----
+### Initial permissions on upload
 
-## Text cleaning
-
-Implemented in `app/services/text_cleaner.py`. The cleaner is deliberately
-conservative:
-
-1. normalize `\r\n` and `\r` to `\n`;
-2. remove zero-width characters;
-3. replace non-breaking spaces;
-4. collapse horizontal whitespace runs to one space;
-5. trim leading/trailing whitespace on each line;
-6. collapse three or more newlines to one paragraph break;
-7. trim the outer result.
-
-It does not remove punctuation, numbers, dates, identifiers, currency amounts
-or technical terms, because those can change document meaning. Empty pages are
-skipped. If no meaningful text remains, ingestion fails with
-`TEXT_CLEANING_FAILED`.
+- `ADMIN` role: `READ` + `MANAGE_PERMISSIONS` when the role exists.
+- Document department role: `READ` when the role exists and is not `ADMIN`.
+- No direct grant merely for uploading.
+- Initial grants are audited.
 
 ---
 
-## Chunking
+## Security testing
 
-Implemented in `app/services/chunking.py`.
+Milestone 4 maps the required scenarios to automated tests. Most use real
+PostgreSQL with RLS and pgvector; Ollama is mocked except for the opt-in real
+integration test.
 
-- Uses the embedding model's tokenizer, not character counts.
-- Builds a token stream annotated with the source page number.
-- Sliding window defaults: **500 tokens**, **100 overlap**, minimum **50**,
-  maximum **700**.
-- Window step is `chunk_size_tokens - chunk_overlap_tokens`.
-- Decodes each window back to text and records the minimum/maximum page number
-  of its tokens as `page_start` / `page_end`.
-- Chunks are ordered by `chunk_index` and preserve logical document order.
-- A tiny trailing window is rebuilt backwards to the configured minimum where
-  possible. A document shorter than the minimum produces one chunk rather than
-  dropping content.
-- Empty/whitespace-only documents fail with `NO_CHUNKS_GENERATED`.
-- Page separators are included only when the tokenizer represents newlines as
-  tokens; page metadata remains exact either way.
+| # | Scenario | Expected result | Test |
+|---|---|---|---|
+| 1 | HR user with current `READ` permission | Authorized context and answer | `test_rag_pipeline.py::test_authorized_hr_user_gets_answer_from_authorized_context` |
+| 2 | Finance document, HR caller | Finance chunk text never reaches LLM | `test_rag_pipeline.py::test_finance_confidential_chunk_never_reaches_llm` |
+| 3 | Cross-tenant document | Other tenant text never reaches LLM | `test_rag_pipeline.py::test_cross_tenant_chunks_never_reach_llm` |
+| 4 | `tenant_id` in request body | `422`, no LLM call | `test_rag_pipeline.py::test_tenant_id_in_request_body_is_rejected_and_cannot_tamper_context` |
+| 5 | Expired permission | No candidates/context | `test_rag_security.py::test_expired_document_permission_excludes_chunk` |
+| 6 | Revocation after ingestion | Access denied on next request, no re-embedding | `test_rag_security.py::test_revocation_after_ingestion_denies_without_reembedding` |
+| 7 | Insufficient clearance | ABAC denies, no LLM call | `test_rag_security.py::test_insufficient_clearance_excludes_chunk_before_llm` |
+| 8 | Inactive document | Excluded from retrieval | `test_rag_security.py::test_inactive_document_is_excluded` |
+| 9 | Unprocessed document | Excluded from retrieval | `test_rag_security.py::test_unprocessed_document_is_excluded` |
+| 10 | No authorized chunks | Safe no-context answer, no LLM call | `test_rag_pipeline.py::test_no_authorized_chunk_returns_safe_response_without_calling_llm` |
+| 11 | Prompt injection in document text | Data stays in user message, system prompt unaffected | `test_prompt_injection.py` |
+| 12 | Attempt to reveal system instructions | System/user separation and explicit prohibition | `test_prompt_injection.py` |
+| 13 | Fabricated citation `[S99]` | Citation rejected, safe unverifiable answer | `test_rag_pipeline.py::test_fabricated_citation_is_rejected` |
+| 14 | Unsupported fact | Prompt requires abstention; no-context path is safe | `test_prompt_injection.py`, `test_rag_pipeline.py` |
+| 15 | Ollama unavailable/timeout/missing model | Controlled `503`, no fabricated answer | `test_rag_pipeline.py`, `test_llm_service.py` |
+| 16 | Embedding model unavailable/invalid | Controlled `503`, no LLM call | `test_query_embedding.py`, `test_rag_pipeline.py` |
+| 17 | No relevant context | No-context response | `test_rag_pipeline.py` |
+| 18 | RLS tenant context missing | Database retrieval denied | `test_rag_security.py::test_rls_without_transaction_context_returns_no_chunks` |
+| 19 | Concurrent tenant queries | No cross-tenant context leakage | `test_rag_security.py::test_concurrent_tenant_queries_do_not_leak` |
+| 20 | History isolation | Authenticated, caller-scoped empty history | `test_rag_security.py::test_history_is_authenticated_user_scoped` |
 
-Before any row is inserted, `validate_chunk_batch` checks:
+Additional coverage includes top-k bounds, model-label mismatch, candidate
+metadata without text, current-permission re-evaluation, deduplication,
+thresholding, token-budget truncation, malformed LLM responses, health
+components and the HNSW migration.
 
-- non-empty chunk list and matching embedding count;
-- active parent document and complete identity;
-- positive page count;
-- sequential, unique chunk indexes;
-- non-empty text;
-- `1 <= page_start <= page_end <= total_pages`;
-- exact embedding dimension and finite values;
-- metadata keys and values match the authoritative document and snapshot.
+### Test commands
 
----
+```powershell
+cd backend
+pytest -q
+alembic check
+```
 
-## Embeddings
-
-Implemented in `app/services/embedding_service.py`.
-
-- Local `sentence-transformers/all-MiniLM-L6-v2`.
-- Configurable model name, version label, batch size and device; default CPU.
-- 384 dimensions, matching `document_chunks.embedding VECTOR(384)`.
-- Lazy model load, one process-wide instance.
-- `normalize_embeddings=True`, batched inference, no external API.
-- Validates output shape, exact dimension and finite values; NaN/Infinity raise
-  `INVALID_EMBEDDING`.
-- Stores the model label (`<model>@<version>`) on the document and the
-  model/version fields in every chunk metadata snapshot.
-
-Tests use a deterministic fake embedding service for speed. One integration
-test loads the real local MiniLM model and verifies 384 finite, normalized
-values. The first real run downloads the model into the Hugging Face cache.
-
----
-
-## Private storage security
-
-Implemented in `app/services/storage.py`.
-
-- Development implementation: `LocalPrivateStorage`.
-- Configurable root: `DOCUMENT_STORAGE_DIR`, default `private_documents`.
-- Generated keys only: `<tenant_uuid>/<document_uuid_hex>.pdf`.
-- The original filename is never used as a path.
-- Absolute paths, drive letters, NUL bytes and `..` segments are rejected.
-- Resolved paths must remain under the private root.
-- Uploads stream into a private `.tmp` directory while enforcing
-  `MAX_UPLOAD_SIZE_BYTES`; the size is checked incrementally.
-- SHA-256 is computed during streaming.
-- Finalization uses `os.replace` for an atomic move on the same filesystem.
-- On POSIX, the final file is chmod `0600`; on Windows the directory stays
-  private and the API never serves it.
-- On database commit failure, the final file is deleted. On storage
-  finalization failure, the database transaction is rolled back.
-- Temporary files are always removed in `finally`.
-- `storage_path` is never included in API responses.
-- `.gitignore` excludes `private_documents/` and test storage patterns.
-
-The `PrivateStorage` protocol is intentionally small (`build_key`,
-`save_stream`, `finalize`, `delete_key`, `delete_path`, `path_for`, `exists`) so
-a private S3-compatible implementation can replace the local backend without
-changing upload or ingestion logic.
-
-**Deployment requirement:** never mount or proxy `DOCUMENT_STORAGE_DIR` as a
-static/public directory. Configure reverse-proxy request-size limits as
-defence in depth.
+Current result: **183 passed, 1 skipped** in the default suite. With a running
+Ollama container and `OLLAMA_INTEGRATION=1`, the result is **184 passed**.
+The opt-in test is `test_ollama_integration.py`; it requires
+`OLLAMA_INTEGRATION=1`, a running Ollama server and the configured model. That
+real test passed against the official `ollama/ollama` Docker container with
+`qwen2.5:3b`; the mocked Ollama tests and the real local embedding-model test
+also pass.
 
 ---
 
-## Security metadata on every chunk
+## Performance
 
-Built by `app/services/chunk_metadata.py`; validated by
-`app/services/chunk_storage.py`.
+### Retrieval budget
 
-Every chunk inherits from authoritative server-side records:
+- Default `top_k = 10`, hard maximum 50.
+- Default `RAG_CONTEXT_TOP_N = 5` authorized chunks after reranking.
+- Default context budget 3000 tokens, using the embedding tokenizer when
+  available and a conservative character estimate otherwise.
+- A short retrieval transaction is used; Ollama runs outside it.
+- Query embedding and generation are the dominant costs. A local MiniLM query
+  embedding is fast on CPU; Ollama latency depends on model size, CPU/GPU and
+  output length.
 
-- `tenant_id`, `document_id`
-- `department`, `classification`, `required_clearance_level`
-- `allowed_roles` — current active, unexpired `READ` grants by role
-- `allowed_role_ids`
-- `allowed_user_ids` — direct user grants
-- `permission_snapshot_at`
-- `embedding_model`, `embedding_model_version`
+### HNSW benchmark
 
-The JSONB metadata is a **snapshot only**, not an authorization source of
-truth. Revoking a grant after ingestion does not rewrite historical chunks.
-Future retrieval must recheck the current `document_permissions` through the
-central authorization engine. This is explicitly tested: after revocation the
-stored chunk snapshot still contains the old role while a live snapshot no
-longer does.
+A synthetic benchmark was run in the development PostgreSQL 16.15 / pgvector
+0.8.7 database with 10,000 random 384-dimensional vectors:
 
-Additional protections:
-
-- metadata keys are allowlisted; unexpected privileged keys fail validation;
-- metadata is compared field-by-field with the document and snapshot before
-  insert;
-- tenant isolation is enforced by RLS and a composite
-  `(tenant_id, document_id)` foreign key;
-- chunk indexes are unique per document;
-- the runtime role receives `SELECT, INSERT` on chunks only (no application
-  update/delete path in this milestone).
-
----
-
-## Initial permissions on upload
-
-The upload service derives initial grants server-side:
-
-- `ADMIN` role: `READ` + `MANAGE_PERMISSIONS` when the tenant role exists;
-- the document's department role: `READ` when that tenant role exists and is
-  not `ADMIN`;
-- no direct grant to the uploader;
-- duplicate-safe inserts inside savepoints;
-- each grant is audited.
-
-A department of `ADMIN` does not create a duplicate second grant. The uploader
-does not receive unrestricted access merely by uploading.
-
----
-
-## Database schema
-
-Migration: `1f07b971535a_milestone3_ingestion_schema.py`
-(base: `9d4e6f8a1b2c`).
-
-### `documents` (extended)
-
-| Column | Type | Notes |
-|---|---|---|
-| `file_hash` | `VARCHAR(64)` | Lowercase SHA-256, nullable for legacy rows |
-| `storage_path` | `TEXT` | Private generated key, never exposed |
-| `file_size` | `BIGINT` | Streamed byte count |
-| `processing_status` | `VARCHAR(20)` | `UPLOADED`, `PROCESSING`, `COMPLETED`, `FAILED`, `ARCHIVED` |
-| `total_pages` | `INTEGER` | `>= 0` |
-| `total_chunks` | `INTEGER` | `>= 0` |
-| `embedding_model` | `VARCHAR(255)` | `<model>@<version>` |
-
-Constraints include processing-status membership, file-size/page/chunk
-non-negativity, SHA-256 format, non-blank storage path, and a tenant-scoped
-partial unique index on `(tenant_id, file_hash)` where `file_hash IS NOT NULL`.
-
-### `document_chunks`
-
-| Column | Type | Notes |
-|---|---|---|
-| `chunk_id` | `UUID` | Primary key |
-| `tenant_id` | `UUID` | FK to organizations |
-| `document_id` | `UUID` | Composite FK with tenant |
-| `chunk_index` | `INTEGER` | `>= 0` |
-| `chunk_text` | `TEXT` | Non-blank |
-| `embedding` | `VECTOR(384)` | pgvector |
-| `page_start`, `page_end` | `INTEGER` | `page_start >= 1`, `page_end >= page_start` |
-| `metadata` | `JSONB` | Trusted snapshot; ORM attribute `chunk_metadata` |
-| `created_at` | `TIMESTAMPTZ` | Server default |
-
-Constraints and indexes:
-
-- direct tenant FK to `organizations`;
-- composite FK `(tenant_id, document_id)` to
-  `documents(tenant_id, document_id)` with `ON DELETE CASCADE`;
-- unique `(tenant_id, document_id, chunk_index)`;
-- index `(tenant_id, document_id)`;
-- GIN index on `metadata`.
-
-### `document_ingestion_jobs`
-
-| Column | Type | Notes |
-|---|---|---|
-| `job_id` | `UUID` | Primary key |
-| `tenant_id`, `document_id` | `UUID` | Composite FK to documents |
-| `status` | `VARCHAR(20)` | `PENDING`, `PROCESSING`, `COMPLETED`, `FAILED` |
-| `started_at`, `completed_at` | `TIMESTAMPTZ` | Nullable |
-| `error_code` | `VARCHAR(64)` | Stable safe code |
-| `error_message` | `TEXT` | Safe message, no text content |
-| `pages_processed`, `chunks_created`, `retry_count` | `INTEGER` | `>= 0` |
-
-The partial unique index
-`uq_ingestion_jobs_active_document (tenant_id, document_id) WHERE status IN
-('PENDING', 'PROCESSING')` is the database-level concurrency guard.
-
-### RLS, grants and pgvector
-
-- `document_chunks` and `document_ingestion_jobs` have `ENABLE` + `FORCE ROW
-  LEVEL SECURITY` and the same fail-closed `tenant_isolation` policy as the
-  Milestone 2 tables.
-- `vaultrag_app` receives `SELECT, INSERT` on chunks and `SELECT, INSERT, UPDATE`
-  on ingestion jobs. It owns no tables and cannot run DDL.
-- pgvector is installed in the `extensions` schema; the runtime and migrator
-  roles have `USAGE` and a `search_path` that includes it.
-- Application-level tenant filters remain as defence in depth.
-
----
-
-## Authorization model
-
-### RBAC — role capabilities
-
-RBAC controls **administrative capabilities**, not ordinary document content:
-
-| Capability | ADMIN | Other roles |
-|---|---|---|
-| `MANAGE_USERS` | yes | no |
-| `MANAGE_ROLES` | yes | no |
-| `CREATE_DOCUMENT` | yes | no |
-| `PROCESS_DOCUMENT` | yes | no |
-| `VIEW_CHUNKS` | yes | no |
-| `MANAGE_ATTRIBUTES` | yes | no |
-| `VIEW_AUDIT_LOGS` | yes | no |
-
-ADMIN also has an implicit tenant-wide document capability for `READ`, `UPDATE`,
-`DELETE` and `MANAGE_PERMISSIONS`. That bypass does **not** bypass ABAC:
-clearance and employment checks still apply. Non-admin role capability sets are
-empty; their document access comes from `document_permissions`.
-
-### Document permissions — exact action grants
-
-A grant targets exactly one subject:
-
-- a tenant-owned role (`role_id`), or
-- one individual user (`user_id`).
-
-Permission types are exact-match:
-
-- `READ`
-- `UPDATE`
-- `DELETE`
-- `MANAGE_PERMISSIONS`
-
-`MANAGE_PERMISSIONS` does **not** imply `READ`, `UPDATE` or `DELETE`.
-Permissions can expire, and revocation is soft (`is_active = false`,
-`revoked_at` is set). Revocation is effective on the next request; the grant row
-remains as history.
-
-### ABAC — attributes evaluated at request time
-
-ABAC answers: *may this user, right now, touch a document with these
-attributes?*
-
-Required attributes:
-
-- `department`
-- `clearance_level` (0–5)
-- `employment_status` (`ACTIVE`, `INACTIVE`, `SUSPENDED`, `TERMINATED`)
-
-Rules:
-
-1. Missing or malformed attributes deny.
-2. Employment status must be `ACTIVE`.
-3. Department must match the document, unless the permission has
-   `cross_department_allowed = true` or the caller is ADMIN.
-4. Clearance must meet the document's required level.
-
-Classification floors:
-
-| Classification | Minimum clearance |
+| Plan | Execution time |
 |---|---|
-| `PUBLIC` | 0 |
-| `INTERNAL` | 1 |
-| `CONFIDENTIAL` | 3 |
-| `RESTRICTED` | 4 |
+| Sequential scan + top-N sort | ~12.1 ms |
+| HNSW index scan (`m=16`, `ef_construction=64`) | ~7.2 ms |
 
-A document cannot be created with a clearance requirement below its
-classification floor.
+This justified adding `ix_document_chunks_embedding_hnsw`. It is a synthetic
+single-table benchmark, not a production load test. The development database
+currently has zero chunks, so real corpus latency and recall must still be
+measured after ingestion. The index is global, not tenant-partitioned; selective
+multi-tenant filters may require tuning `hnsw.ef_search` or an iterative scan
+policy in a future deployment.
 
-### PostgreSQL RLS — database-enforced tenant isolation
+### Test runtime
 
-- Both database roles are `NOSUPERUSER` and `NOBYPASSRLS`.
-- `vaultrag_app` owns no tables and cannot run DDL.
-- `vaultrag_migrator` owns the schema and runs Alembic.
-- Every tenant table has `ENABLE` and `FORCE ROW LEVEL SECURITY`.
-- The `tenant_isolation` policy applies to `PUBLIC` and uses
-  `security.current_tenant_id()`.
-- The API runs `set_config('app.current_tenant_id', :tenant_id, true)` at the
-  start of each request transaction. The value is transaction-local and is
-  cleared on commit or rollback, so it cannot leak through the connection pool.
-- Missing or malformed context returns `NULL`; the policy denies all rows.
-
-Application-level `tenant_id` filters remain as defence in depth.
-
-### Central authorization engine
-
-`app/services/authorization.py` evaluates, in order:
-
-1. trusted user and organization state;
-2. tenant match;
-3. document active state and valid action;
-4. RBAC / exact document permission;
-5. ABAC department, employment and clearance.
-
-Routes call the engine and translate the decision. They do not query
-`document_permissions` or compare clearance levels directly.
-
----
-
-## Security audit
-
-- `security_audit_logs` is append-only for the runtime role: `SELECT` and
-  `INSERT` only.
-- Allowed decisions are written in the same transaction as the business action.
-  If the audit write fails, the action is rolled back (fail closed).
-- Denied authorization checks use an independent transaction so the denial
-  survives the request rollback.
-- Ingestion writes `INGESTION_START`, `INGESTION_COMPLETE` and `INGESTION_FAIL`
-  audit events with safe reasons only.
-- Upload writes `UPLOAD` and initial `PERMISSION_GRANT` events.
-- Admin chunk inspection writes `CHUNKS_VIEW`.
-- Audit rows include tenant, actor, resource, action, decision, reason, policy,
-  request ID and client IP.
-- `GET /security/audit-logs` is ADMIN-only and tenant-scoped by both the query
-  filter and RLS.
-- Reading the audit log is itself audited.
+The full suite takes roughly 2.5 minutes on the development machine because it
+uses real PostgreSQL and real migrations. RAG API tests use fake embeddings and
+a recording mock LLM to keep runtime and determinism reasonable.
 
 ---
 
@@ -888,13 +906,14 @@ Routes call the engine and translate the decision. They do not query
 backend/
   alembic/versions/
     1f07b971535a_milestone3_ingestion_schema.py
+    4e8a1c2b7d90_add_hnsw_vector_index.py
   app/
     core/               config, database, security constants, exceptions
     dependencies/       authentication and capability dependencies
     models/             Organization, User, Role, Document,
                         DocumentPermission, DocumentChunk,
                         DocumentIngestionJob, SecurityAuditLog
-    routes/             auth, users, organizations, documents, audit
+    routes/             auth, users, organizations, documents, rag, security
     schemas/            Pydantic request/response models
     services/
       authorization.py  central RBAC/ABAC engine
@@ -907,6 +926,15 @@ backend/
       chunk_metadata.py
       chunk_storage.py
       ingestion_service.py
+      query_embedding.py
+      vector_retrieval.py
+      retrieval_authorization.py
+      reranking.py
+      context_builder.py
+      prompt_builder.py
+      llm_service.py
+      citation_service.py
+      rag_service.py
     tests/
       test_document_upload.py
       test_pdf_extraction.py
@@ -926,6 +954,17 @@ backend/
       test_security_audit.py
       test_auth.py
       test_organizations.py
+      test_query_embedding.py
+      test_vector_retrieval.py
+      test_retrieval_authorization.py
+      test_reranking.py
+      test_context_builder.py
+      test_prompt_injection.py
+      test_llm_service.py
+      test_citation_service.py
+      test_rag_pipeline.py
+      test_rag_security.py
+      test_ollama_integration.py
 database/
   init.sql              databases + pgvector in extensions schema
   bootstrap_roles.sql   restricted app role + migrator role
@@ -935,65 +974,41 @@ docs/
 
 ---
 
-## Test coverage
-
-Current result: **136 passed**.
-
-Milestone 3 test files and coverage:
-
-| File | Coverage |
-|---|---|
-| `test_document_upload.py` | valid upload, private storage, server-derived metadata, mass-assignment resistance, extension/MIME/empty/malformed/encrypted/image-only rejection, duplicate hash per tenant, initial grants, storage size limit/traversal |
-| `test_pdf_extraction.py` | real PyMuPDF files, page ordering/empty pages, renamed non-PDF, encrypted, image-only, blank, missing and truncated files |
-| `test_text_cleaning.py` | line endings, zero-width characters, horizontal whitespace, paragraph preservation, punctuation/numbers |
-| `test_chunking.py` | token limits, overlap, page ranges across boundaries, short documents, trailing-window rebuild, empty input, config validation |
-| `test_embeddings.py` | fake vectors, wrong dimension, NaN/Infinity, empty batch, real local MiniLM 384-dimension normalized output |
-| `test_chunk_metadata.py` | snapshot from active READ grants, trusted fields, mismatch rejection, stale snapshot after grant/revoke |
-| `test_chunk_storage.py` | transactional insert, tenant inheritance, validation, wrong dimension/non-finite, page/index errors, metadata extra keys, rollback on constraint failure, composite-FK cross-tenant insertion, RLS rejection |
-| `test_ingestion_pipeline.py` | end-to-end process, status/list/chunks APIs, missing file failure, rollback failure, concurrent processing rejection, metadata-only document rejection |
-| `test_ingestion_security.py` | non-admin upload/process/chunks denial, admin-without-ABAC chunk denial, authorized non-admin status, cross-tenant 404, debug endpoint denial, stale permission snapshot, archived document rejection |
-
-The suite uses **real PostgreSQL** for RLS, composite foreign keys, partial
-unique indexes and pgvector. Embeddings are mocked for fast unit/API tests; one
-test uses the real local Sentence Transformers model. No test claims a feature
-works without asserting the database state or API response.
-
-Useful commands:
-
-```powershell
-cd backend
-pytest -q
-alembic check
-```
-
----
-
 ## Known limitations
 
-Not implemented in this milestone:
-
-- retrieval, similarity search, citation building, LLM calls, chatbot or
-  frontend;
-- a background worker/queue: processing is synchronous and the HTTP request
-  blocks during extraction/embedding;
-- private S3 storage: only the local storage implementation exists, although
-  the protocol is designed for a later adapter;
-- OCR for scanned/image-only PDFs;
-- malware/virus scanning, document sandboxing beyond PyMuPDF parsing, or
-  CPU/memory quotas per document;
-- cleanup/reprocessing API: completed documents cannot be reprocessed, and old
-  chunks have no delete path;
-- re-embedding or model-version migration tooling;
-- chunk-listing pagination: the admin debug endpoint returns all chunks;
-- retrieval-time permission enforcement: retrieval is out of scope, so the
-  JSONB snapshot is not used as an authorization source;
-- application-level encryption of files at rest (rely on OS/disk permissions
-  and encryption);
-- refresh tokens, token revocation list, email verification, invitations,
-  password reset or MFA;
-- login rate limiting or account lockout;
-- a public endpoint for setting ABAC attributes on the first administrator;
-- independent security audit or penetration test.
+- **The real Ollama test is opt-in and skipped by default.** It passed against
+  the official `ollama/ollama` Docker container with `qwen2.5:3b`; keep that
+  container running and set `OLLAMA_INTEGRATION=1` to exercise it. Native Ollama
+  installation is also supported.
+- No conversation persistence. `/rag/history` is stateless and always empty.
+- No streaming, async generation queue or background worker. Processing and
+  `/rag/ask` are synchronous HTTP requests.
+- No automatic factual verification of every generated sentence. Citation
+  validation proves source-id validity and backend attribution, not that the
+  model's interpretation is correct. The system prompt requires abstention, but
+  residual hallucination is still a model risk.
+- No query rewriting, multi-query expansion, HyDE or relevance feedback.
+- Optional cross-encoder reranking is disabled by default and has no benchmark
+  yet.
+- HNSW is a global index, not tenant-partitioned. Highly selective multi-tenant
+  workloads may need `hnsw.ef_search`/iterative-scan tuning or a different
+  retrieval architecture.
+- The 10k-vector benchmark is synthetic and does not establish production recall
+  or latency.
+- The development database currently has zero chunks, so no production-corpus
+  retrieval benchmark exists.
+- No OCR for scanned/image-only PDFs.
+- No private S3 storage adapter yet; local private storage is used.
+- No cleanup/reprocessing API; completed documents cannot be reprocessed and old
+  chunks have no delete path.
+- No re-embedding or embedding-model migration tooling. Changing the model
+  requires reprocessing; retrieval explicitly excludes mismatched model labels
+  rather than mixing spaces.
+- No token-exact fallback tokenizer for every environment; context budgeting
+  uses the embedding tokenizer when available and an estimate otherwise.
+- No rate limiting, account lockout, MFA, refresh-token rotation, email
+  verification or password reset.
+- No independent security audit or penetration test.
 
 Never commit `backend/.env`, generated secrets, private documents or production
 database credentials. This is an educational project following production

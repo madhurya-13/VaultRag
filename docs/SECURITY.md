@@ -1,8 +1,9 @@
-# Security Design — VaultRAG Milestone 2
+# Security Design — VaultRAG Milestone 4
 
-This document is the design reference for Milestone 2: centralized RBAC/ABAC
-authorization, document permissions, PostgreSQL row-level security (RLS),
-permission revocation and the security audit log.
+This document is the security design reference for VaultRAG Milestones 1-4:
+centralized RBAC/ABAC authorization, document permissions, PostgreSQL row-level
+security (RLS), permission revocation, the security audit log, permission-aware
+retrieval, local Ollama generation and citation validation.
 
 The README is the quick start. This file explains **why** the controls are
 arranged the way they are and what each layer does — and does not — protect.
@@ -21,13 +22,20 @@ Implemented:
 - two restricted database roles with different privileges;
 - immediate permission and role revocation;
 - append-only security audit logging with request-ID correlation;
+- secure PDF ingestion, token-aware chunking and local 384-dimensional
+  embeddings stored in pgvector;
+- three-stage permission-aware retrieval that never selects unauthorized chunk
+  text for context;
+- local Ollama generation with backend-generated source ids and citation
+  validation;
 - automated tests for all of the above.
 
 Out of scope for this milestone:
 
-- document ingestion and content storage;
-- embeddings, vector search, RAG, LLM or chatbot features;
-- frontend;
+- frontend and conversation persistence;
+- background ingestion/generation workers;
+- OCR for scanned PDFs;
+- production load, recall and capacity testing;
 - refresh tokens, MFA, email verification, password reset or invitations;
 - external identity providers;
 - independent penetration testing.
@@ -487,7 +495,9 @@ policies, not mocks.
 
 ## 15. Known limitations
 
-- No document content, embeddings, vector search, LLM or frontend yet.
+- No frontend, conversation persistence, streaming or background worker yet.
+- Citation validation proves source-id validity, not factual correctness of every generated sentence.
+- The HNSW index is global, not tenant-partitioned; multi-tenant recall and latency need production-corpus tuning.
 - No refresh-token rotation, token revocation list, MFA or login rate limiting.
 - No public bootstrap endpoint for the first administrator's ABAC attributes;
   use a second admin or an operator session.
