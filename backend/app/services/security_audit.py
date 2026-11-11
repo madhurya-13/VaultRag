@@ -9,15 +9,15 @@ Audit writes deliberately accept an optional session:
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal, set_tenant_context
 from app.core.request_context import RequestMeta
-from app.models import SecurityAuditLog
+from app.models import SecurityAuditLog, User
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +123,104 @@ def list_security_audit_logs(
         .offset(offset)
     )
     return list(db.scalars(statement).all())
+
+
+def security_analytics(
+    db: Session,
+    *,
+    tenant_id: UUID,
+    days: int = 7,
+) -> dict:
+    """Aggregate tenant audit activity for the security dashboard.
+
+    Only real audit rows are counted. The caller is responsible for enforcing the
+    ``VIEW_AUDIT_LOGS`` capability.
+    """
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    window = and_(
+        SecurityAuditLog.tenant_id == tenant_id,
+        SecurityAuditLog.timestamp >= since,
+    )
+
+    decision_rows = db.execute(
+        select(SecurityAuditLog.decision, func.count())
+        .where(window)
+        .group_by(SecurityAuditLog.decision)
+    ).all()
+    decisions = {decision: int(count) for decision, count in decision_rows}
+
+    action_rows = db.execute(
+        select(SecurityAuditLog.action, func.count())
+        .where(window)
+        .group_by(SecurityAuditLog.action)
+        .order_by(func.count().desc(), SecurityAuditLog.action)
+    ).all()
+
+    resource_rows = db.execute(
+        select(SecurityAuditLog.resource_type, func.count())
+        .where(window)
+        .group_by(SecurityAuditLog.resource_type)
+        .order_by(func.count().desc(), SecurityAuditLog.resource_type)
+    ).all()
+
+    day_expr = func.date_trunc("day", SecurityAuditLog.timestamp)
+    daily_rows = db.execute(
+        select(day_expr, SecurityAuditLog.decision, func.count())
+        .where(window)
+        .group_by(day_expr, SecurityAuditLog.decision)
+        .order_by(day_expr)
+    ).all()
+    daily: dict = {}
+    for day, decision, count in daily_rows:
+        point = daily.setdefault(
+            day.date(),
+            {"date": day.date(), "allowed": 0, "denied": 0, "total": 0},
+        )
+        if decision == "DENY":
+            point["denied"] += int(count)
+        else:
+            point["allowed"] += int(count)
+        point["total"] += int(count)
+
+    actor_rows = db.execute(
+        select(SecurityAuditLog.user_id, User.username, func.count())
+        .outerjoin(
+            User,
+            and_(
+                User.tenant_id == SecurityAuditLog.tenant_id,
+                User.user_id == SecurityAuditLog.user_id,
+            ),
+        )
+        .where(window, SecurityAuditLog.user_id.is_not(None))
+        .group_by(SecurityAuditLog.user_id, User.username)
+        .order_by(func.count().desc())
+        .limit(10)
+    ).all()
+
+    return {
+        "days": days,
+        "since": since,
+        "total_events": sum(decisions.values()),
+        "allowed_events": decisions.get("ALLOW", 0),
+        "denied_events": decisions.get("DENY", 0),
+        "by_action": [
+            {"key": action, "count": int(count)}
+            for action, count in action_rows
+        ],
+        "by_resource_type": [
+            {"key": resource_type, "count": int(count)}
+            for resource_type, count in resource_rows
+        ],
+        "daily": [daily[day] for day in sorted(daily)],
+        "top_actors": [
+            {
+                "user_id": user_id,
+                "username": username,
+                "count": int(count),
+            }
+            for user_id, username, count in actor_rows
+        ],
+    }
 
 
 def audit_timestamp() -> datetime:

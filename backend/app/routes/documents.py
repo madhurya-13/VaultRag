@@ -38,6 +38,7 @@ from app.services.authorization import (
 )
 from app.services.document_permissions import (
     grant_permission,
+    list_document_permissions as list_document_permissions_service,
     revoke_permission,
 )
 from app.services.document_upload import upload_document
@@ -348,6 +349,29 @@ def access_check(
         policy=decision.policy,
         reason=decision.reason,
     )
+
+
+@router.get(
+    "/{document_id}/permissions",
+    response_model=list[PermissionResponse],
+    summary="List document permission grants (MANAGE_PERMISSIONS)",
+)
+def list_document_permissions(
+    document_id: UUID,
+    include_revoked: bool = False,
+    context: AuthenticatedContext = Depends(get_current_auth),
+    db: Session = Depends(get_db),
+    request_meta: RequestMeta = Depends(get_request_meta),
+) -> list[PermissionResponse]:
+    decision = authorize_document(db, context, document_id, "MANAGE_PERMISSIONS")
+    enforce_authorization(db, context, decision, request_meta)
+    permissions = list_document_permissions_service(
+        db,
+        tenant_id=context.tenant_id,
+        document_id=document_id,
+        include_revoked=include_revoked,
+    )
+    return [_permission_response(permission) for permission in permissions]
 
 
 @router.post(

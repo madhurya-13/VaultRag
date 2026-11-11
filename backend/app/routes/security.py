@@ -13,10 +13,11 @@ from app.dependencies.authentication import (
     AuthenticatedContext,
     require_capability,
 )
-from app.schemas.security import SecurityAuditLogResponse
+from app.schemas.security import SecurityAnalyticsResponse, SecurityAuditLogResponse
 from app.services.security_audit import (
     list_security_audit_logs,
     log_security_event,
+    security_analytics,
 )
 
 router = APIRouter(prefix="/security", tags=["Security audit"])
@@ -81,3 +82,36 @@ def get_audit_logs(
         )
         for event in events
     ]
+
+
+@router.get(
+    "/analytics",
+    response_model=SecurityAnalyticsResponse,
+    summary="Aggregate tenant audit activity (ADMIN only)",
+)
+def get_analytics(
+    days: Annotated[int, Query(ge=1, le=90)] = 7,
+    context: AuthenticatedContext = Depends(
+        require_capability(CAP_VIEW_AUDIT_LOGS)
+    ),
+    db: Session = Depends(get_db),
+    request_meta: RequestMeta = Depends(get_request_meta),
+) -> SecurityAnalyticsResponse:
+    analytics = security_analytics(
+        db,
+        tenant_id=context.tenant_id,
+        days=days,
+    )
+    log_security_event(
+        db,
+        tenant_id=context.tenant_id,
+        user_id=context.user.user_id,
+        resource_type="SECURITY_AUDIT_LOG",
+        resource_id=None,
+        action="ANALYTICS_VIEW",
+        decision="ALLOW",
+        reason=f"Aggregated {analytics['total_events']} events over {days} days",
+        policy=POLICY_ALLOW,
+        request_meta=request_meta,
+    )
+    return SecurityAnalyticsResponse(**analytics)

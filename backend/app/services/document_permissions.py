@@ -90,6 +90,32 @@ def matching_permissions(
     )
 
 
+def list_document_permissions(
+    db: Session,
+    *,
+    tenant_id: UUID,
+    document_id: UUID,
+    include_revoked: bool = False,
+) -> list[DocumentPermission]:
+    """List grants for one document, newest first.
+
+    The caller is responsible for authorizing ``MANAGE_PERMISSIONS`` on the
+    document before invoking this service.
+    """
+    _get_document(db, tenant_id, document_id)
+    statement = select(DocumentPermission).where(
+        DocumentPermission.tenant_id == tenant_id,
+        DocumentPermission.document_id == document_id,
+    )
+    if not include_revoked:
+        statement = statement.where(DocumentPermission.is_active.is_(True))
+    statement = statement.order_by(
+        DocumentPermission.granted_at.desc(),
+        DocumentPermission.permission_id,
+    )
+    return list(db.scalars(statement).all())
+
+
 def grant_permission(
     db: Session,
     *,

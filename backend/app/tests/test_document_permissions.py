@@ -15,6 +15,7 @@ from app.tests.helpers import (
     list_documents,
     login,
     read_document,
+    revoke_document_permission,
     seed_user_attributes,
     set_user_attributes,
     use_tenant,
@@ -367,3 +368,167 @@ def test_inactive_document_denies_access_and_new_grants(client, db):
     )
     # The central engine denies before the service layer, even for ADMIN.
     assert blocked_grant.status_code == 403, blocked_grant.text
+
+
+def test_permission_listing_returns_active_and_optional_revoked_grants(client, db):
+    org, admin, admin_token = _admin_with_attributes(client, db)
+    document = create_document(client, admin_token)
+    role_grant = grant_document_permission(
+        client,
+        admin_token,
+        document["document_id"],
+        permission_type="READ",
+        role_name="HR",
+        cross_department_allowed=True,
+    )
+    user = admin_create_user(
+        client,
+        admin_token,
+        email="reader@alpha.com",
+        username="reader_user",
+        role_names=["ENGINEERING"],
+    )
+    user_grant = grant_document_permission(
+        client,
+        admin_token,
+        document["document_id"],
+        permission_type="UPDATE",
+        user_id=user["user_id"],
+    )
+
+    active = client.get(
+        f"/documents/{document['document_id']}/permissions",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert active.status_code == 200, active.text
+    active_payload = active.json()
+    assert {row["permission_id"] for row in active_payload} == {
+        role_grant["permission_id"],
+        user_grant["permission_id"],
+    }
+    role_row = next(
+        row
+        for row in active_payload
+        if row["permission_id"] == role_grant["permission_id"]
+    )
+    assert role_row["role_id"] is not None
+    assert role_row["user_id"] is None
+    assert role_row["permission_type"] == "READ"
+    assert role_row["cross_department_allowed"] is True
+    assert role_row["is_active"] is True
+
+    user_row = next(
+        row
+        for row in active_payload
+        if row["permission_id"] == user_grant["permission_id"]
+    )
+    assert user_row["user_id"] == user["user_id"]
+    assert user_row["role_id"] is None
+    assert user_row["permission_type"] == "UPDATE"
+
+    revoke_document_permission(
+        client, admin_token, document["document_id"], role_grant["permission_id"]
+    )
+
+    after_revoke = client.get(
+        f"/documents/{document['document_id']}/permissions",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert after_revoke.status_code == 200, after_revoke.text
+    assert [row["permission_id"] for row in after_revoke.json()] == [
+        user_grant["permission_id"]
+    ]
+
+    with_revoked = client.get(
+        f"/documents/{document['document_id']}/permissions",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        params={"include_revoked": "true"},
+    )
+    assert with_revoked.status_code == 200, with_revoked.text
+    revoked_row = next(
+        row
+        for row in with_revoked.json()
+        if row["permission_id"] == role_grant["permission_id"]
+    )
+    assert revoked_row["is_active"] is False
+    assert revoked_row["revoked_at"] is not None
+    assert revoked_row["revoked_by"] == str(admin.user_id)
+
+
+def test_permission_listing_requires_exact_manage_permissions_grant(client, db):
+    org, admin, admin_token = _admin_with_attributes(client, db)
+    document = create_document(client, admin_token, department="ENGINEERING")
+    hr, hr_token = _make_user(
+        client,
+        admin_token,
+        org["tenant_id"],
+        email="hr@alpha.com",
+        username="hr_user",
+        role_name="HR",
+    )
+
+    grant_document_permission(
+        client,
+        admin_token,
+        document["document_id"],
+        permission_type="READ",
+        role_name="HR",
+    )
+
+    denied = client.get(
+        f"/documents/{document['document_id']}/permissions",
+        headers={"Authorization": f"Bearer {hr_token}"},
+    )
+    assert denied.status_code == 403, denied.text
+
+    manager_grant = grant_document_permission(
+        client,
+        admin_token,
+        document["document_id"],
+        permission_type="MANAGE_PERMISSIONS",
+        user_id=hr["user_id"],
+    )
+    allowed = client.get(
+        f"/documents/{document['document_id']}/permissions",
+        headers={"Authorization": f"Bearer {hr_token}"},
+    )
+    assert allowed.status_code == 200, allowed.text
+    assert manager_grant["permission_id"] in {
+        row["permission_id"] for row in allowed.json()
+    }
+
+
+def test_permission_listing_is_tenant_isolated(client, db):
+    org_a, admin_a, admin_a_token = _admin_with_attributes(
+        client,
+        db,
+        organization_name="Alpha Corp",
+        email="admin@alpha.com",
+        username="alpha_admin",
+    )
+    org_b, admin_b, admin_b_token = _admin_with_attributes(
+        client,
+        db,
+        organization_name="Beta Corp",
+        email="admin@beta.com",
+        username="beta_admin",
+    )
+    document_a = create_document(client, admin_a_token, document_name="Alpha doc")
+    grant_document_permission(
+        client,
+        admin_a_token,
+        document_a["document_id"],
+        permission_type="READ",
+        role_name="HR",
+    )
+
+    cross_tenant = client.get(
+        f"/documents/{document_a['document_id']}/permissions",
+        headers={"Authorization": f"Bearer {admin_b_token}"},
+    )
+    assert cross_tenant.status_code == 404, cross_tenant.text
+
+    anonymous = client.get(
+        f"/documents/{document_a['document_id']}/permissions"
+    )
+    assert anonymous.status_code == 401
