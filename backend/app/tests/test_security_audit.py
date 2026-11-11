@@ -1,5 +1,6 @@
 """Security audit logging: decisions, append-only storage and tenant isolation."""
 
+from datetime import datetime
 from uuid import UUID, uuid4
 
 import pytest
@@ -317,3 +318,137 @@ def test_reading_audit_logs_is_itself_audited(client, db):
     assert second
     assert second[0]["action"] == "VIEW"
     assert second[0]["decision"] == "ALLOW"
+
+
+def test_security_analytics_aggregate_real_audit_rows(client, db):
+    org, admin, admin_token = admin_bundle_with_attributes(
+        client, db, organization_name="Alpha Corp", email="admin@alpha.com", username="alpha_admin"
+    )
+    document = create_document(client, admin_token)
+    user, user_token = tenant_user_with_attributes(
+        client,
+        admin_token,
+        org["tenant_id"],
+        email="hr@alpha.com",
+        username="hr_user",
+        role_names=["HR"],
+    )
+
+    assert read_document(client, admin_token, document["document_id"]).status_code == 200
+    assert read_document(client, user_token, document["document_id"]).status_code == 403
+    grant_document_permission(
+        client,
+        admin_token,
+        document["document_id"],
+        permission_type="READ",
+        role_name="HR",
+    )
+    assert read_document(client, user_token, document["document_id"]).status_code == 200
+
+    response = client.get(
+        "/security/analytics",
+        headers=auth_headers(admin_token),
+        params={"days": 7},
+    )
+    assert response.status_code == 200, response.text
+    analytics = response.json()
+
+    assert analytics["days"] == 7
+    assert datetime.fromisoformat(analytics["since"])
+    assert analytics["total_events"] == (
+        analytics["allowed_events"] + analytics["denied_events"]
+    )
+    assert analytics["total_events"] > 0
+    assert analytics["denied_events"] >= 1
+
+    assert sum(item["count"] for item in analytics["by_action"]) == analytics[
+        "total_events"
+    ]
+    assert sum(
+        item["count"] for item in analytics["by_resource_type"]
+    ) == analytics["total_events"]
+
+    dates = [point["date"] for point in analytics["daily"]]
+    assert dates == sorted(dates)
+    for point in analytics["daily"]:
+        assert point["allowed"] + point["denied"] == point["total"]
+    assert sum(point["total"] for point in analytics["daily"]) == analytics[
+        "total_events"
+    ]
+
+    actor_ids = {actor["user_id"] for actor in analytics["top_actors"]}
+    assert str(admin.user_id) in actor_ids
+    assert user["user_id"] in actor_ids
+    assert all(actor["count"] > 0 for actor in analytics["top_actors"])
+    assert next(
+        actor for actor in analytics["top_actors"] if actor["user_id"] == user["user_id"]
+    )["username"] == "hr_user"
+
+
+def test_security_analytics_are_tenant_scoped_and_self_audited(client, db):
+    org_a, admin_a, admin_a_token = admin_bundle_with_attributes(
+        client,
+        db,
+        organization_name="Alpha Corp",
+        email="admin@alpha.com",
+        username="alpha_admin",
+    )
+    org_b, admin_b, admin_b_token = admin_bundle_with_attributes(
+        client,
+        db,
+        organization_name="Beta Corp",
+        email="admin@beta.com",
+        username="beta_admin",
+    )
+
+    document_a = create_document(client, admin_a_token)
+    assert read_document(client, admin_a_token, document_a["document_id"]).status_code == 200
+
+    first = client.get("/security/analytics", headers=auth_headers(admin_b_token))
+    assert first.status_code == 200, first.text
+    assert first.json()["total_events"] == 0
+    assert first.json()["by_action"] == []
+    assert first.json()["by_resource_type"] == []
+    assert first.json()["top_actors"] == []
+    assert first.json()["daily"] == []
+
+    # The analytics call itself is audited and appears in the next window.
+    second = client.get("/security/analytics", headers=auth_headers(admin_b_token))
+    assert second.status_code == 200, second.text
+    payload = second.json()
+    assert payload["total_events"] == 1
+    assert payload["allowed_events"] == 1
+    assert payload["denied_events"] == 0
+    assert payload["by_action"] == [{"key": "ANALYTICS_VIEW", "count": 1}]
+    assert payload["by_resource_type"] == [
+        {"key": "SECURITY_AUDIT_LOG", "count": 1}
+    ]
+    assert payload["top_actors"][0]["user_id"] == str(admin_b.user_id)
+
+
+def test_security_analytics_require_capability_and_validate_window(client, db):
+    org, admin, admin_token = admin_bundle_with_attributes(
+        client, db, organization_name="Alpha Corp", email="admin@alpha.com", username="alpha_admin"
+    )
+    user, user_token = tenant_user_with_attributes(
+        client,
+        admin_token,
+        org["tenant_id"],
+        email="employee@alpha.com",
+        username="employee_user",
+        role_names=["EMPLOYEE"],
+    )
+
+    denied = client.get("/security/analytics", headers=auth_headers(user_token))
+    assert denied.status_code == 403
+    assert client.get("/security/analytics").status_code == 401
+
+    for days in (0, 91):
+        invalid = client.get(
+            "/security/analytics",
+            headers=auth_headers(admin_token),
+            params={"days": days},
+        )
+        assert invalid.status_code == 422, invalid.text
+
+    assert user["user_id"]

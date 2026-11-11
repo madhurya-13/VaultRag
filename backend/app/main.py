@@ -19,7 +19,16 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.database import engine, get_db
 from app.core.exceptions import AppError
-from app.routes import attributes, auth, documents, organizations, rag, security, users
+from app.routes import (
+    attributes,
+    auth,
+    documents,
+    organizations,
+    rag,
+    roles,
+    security,
+    users,
+)
 
 settings = get_settings()
 
@@ -43,8 +52,8 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="VaultRAG API",
-    version="4.0.0",
-    summary="Permission-aware multi-tenant RAG platform - Milestone 4",
+    version="5.0.0",
+    summary="Permission-aware multi-tenant RAG platform - Milestone 5",
     description=(
         "Secure RAG backend: tenants, users, tenant-scoped roles, JWT "
         "authentication, centralized RBAC/ABAC document authorization, "
@@ -136,6 +145,7 @@ def health(db: Session = Depends(get_db)) -> dict[str, str]:
 app.include_router(auth.router)
 app.include_router(organizations.router)
 app.include_router(users.router)
+app.include_router(roles.router)
 app.include_router(attributes.router)
 app.include_router(documents.router)
 app.include_router(rag.router)

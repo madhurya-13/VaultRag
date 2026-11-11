@@ -1,12 +1,12 @@
-# VaultRAG - Permission-Aware Multi-Tenant RAG System
+# VaultRAG - Permission-Aware Multi-Tenant RAG Platform
 
-> **Milestone 4: Permission-aware pgvector retrieval, local Ollama generation and validated citations**
+> **Milestones 1-5: tenant-isolated authorization, ingestion, permission-aware RAG, and a full-stack employee/admin/security interface**
 
 VaultRAG is a multi-tenant platform where organizations share one application
 while users, roles, documents, chunks, embeddings, retrieval context, generated
 answers and audit trails remain isolated.
 
-This repository contains the **Milestone 4 backend**. It adds:
+This repository contains a FastAPI/PostgreSQL backend and the Milestone 5 React frontend. The backend provides:
 
 - a permission-aware retrieval pipeline over the Milestone 3 pgvector chunks;
 - local generation through Ollama, with no paid LLM API;
@@ -14,7 +14,10 @@ This repository contains the **Milestone 4 backend**. It adds:
 - security audit events for retrieval, generation and citation decisions;
 - an optional HNSW vector index, benchmarked before inclusion.
 
-The frontend and a production background-worker queue remain out of scope.
+Milestone 5 adds the responsive employee workspace, AI assistant, document
+management, user and role directory, and tenant-scoped security monitoring.
+The frontend is documented in [frontend/README.md](frontend/README.md). A
+production background-worker queue remains out of scope.
 
 **Primary security guarantee:** unauthorized document chunk text is never
 selected for context construction and is never sent to the language model.
@@ -81,8 +84,8 @@ Detailed threat model and design decisions: [docs/SECURITY.md](docs/SECURITY.md)
   valid citation remains, a safe unverifiable response is returned
 - `GET /rag/health` and stateless, user-scoped `GET /rag/history`
 - Optional HNSW cosine index with benchmark evidence
-- **183 passed, 1 skipped** in the full suite; the skipped test is the optional
-  real local Ollama integration test.
+- Backend authorization, retrieval and ingestion test coverage. The real Ollama
+  integration test is opt-in; run the current suite for checked-out results.
 
 ---
 
@@ -341,9 +344,9 @@ cd C:\Users\Madhurya\OneDrive\Desktop\VaultRag\backend
 pytest -q
 ```
 
-Expected: **183 passed, 1 skipped** (the skipped test is the optional real
-Ollama integration test). With the Ollama container running and
-`OLLAMA_INTEGRATION=1`, the same command reports **184 passed**.
+The Milestone 4 baseline was 183 passed and 1 skipped. Milestone 5 adds backend
+role/audit and frontend coverage; run the current suite for results from this
+tree. The real Ollama integration test is opt-in.
 
 The suite drops and recreates the schema in the database configured by
 `TEST_DATABASE_URL`. It refuses to run unless the database name contains
@@ -852,13 +855,16 @@ pytest -q
 alembic check
 ```
 
-Current result: **183 passed, 1 skipped** in the default suite. With a running
-Ollama container and `OLLAMA_INTEGRATION=1`, the result is **184 passed**.
 The opt-in test is `test_ollama_integration.py`; it requires
 `OLLAMA_INTEGRATION=1`, a running Ollama server and the configured model. That
 real test passed against the official `ollama/ollama` Docker container with
 `qwen2.5:3b`; the mocked Ollama tests and the real local embedding-model test
 also pass.
+
+Milestone 5 frontend setup, API mapping, browser tests and UI limitations are
+documented in [frontend/README.md](frontend/README.md). Frontend unit tests use
+isolated API mocks; Playwright requires a running API and provisioned demo
+tenant to exercise real backend routes.
 
 ---
 
