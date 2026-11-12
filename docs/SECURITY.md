@@ -498,7 +498,9 @@ policies, not mocks.
 - No frontend, conversation persistence, streaming or background worker yet.
 - Citation validation proves source-id validity, not factual correctness of every generated sentence.
 - The HNSW index is global, not tenant-partitioned; multi-tenant recall and latency need production-corpus tuning.
-- No refresh-token rotation, token revocation list, MFA or login rate limiting.
+- No refresh-token rotation, token revocation list or MFA. Local Nginx applies
+  per-IP login/API rate limits; distributed deployments need a shared limiter
+  or WAF.
 - No public bootstrap endpoint for the first administrator's ABAC attributes;
   use a second admin or an operator session.
 - The audit table is append-only for the runtime role, but a database owner or
