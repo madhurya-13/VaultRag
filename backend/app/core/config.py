@@ -13,12 +13,28 @@ Security notes
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
+from sqlalchemy.engine import make_url
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 MIN_JWT_SECRET_LENGTH = 32
 INSECURE_SECRET_PREFIXES = ("change_me", "changeme", "change-me", "replace-with", "secret")
+
+
+def _is_valid_production_origin(origin: str) -> bool:
+    parsed = urlsplit(origin)
+    if (
+        parsed.hostname is None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        return False
+    if parsed.scheme == "https":
+        return True
+    return parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1"}
 
 
 class Settings(BaseSettings):
@@ -56,9 +72,17 @@ class Settings(BaseSettings):
 
     jwt_secret_key: SecretStr = Field(..., description="HMAC signing secret (>= 32 chars)")
     jwt_algorithm: Literal["HS256", "HS384", "HS512"] = "HS256"
+    jwt_issuer: str = Field(default="vaultrag", min_length=1, max_length=200)
+    jwt_audience: str = Field(default="vaultrag-api", min_length=1, max_length=200)
     access_token_expire_minutes: int = Field(default=30, ge=1, le=1440)
 
     cors_origins: list[str] = Field(default_factory=list)
+    allowed_hosts: list[str] = Field(
+        default_factory=lambda: ["localhost", "127.0.0.1", "testserver"]
+    )
+    database_pool_size: int = Field(default=5, ge=1, le=100)
+    database_max_overflow: int = Field(default=10, ge=0, le=100)
+    database_pool_timeout_seconds: int = Field(default=30, ge=1, le=300)
     sql_echo: bool = False
     log_level: str = "INFO"
 
@@ -73,6 +97,12 @@ class Settings(BaseSettings):
         default=25 * 1024 * 1024,
         ge=1024,
         description="Maximum accepted PDF upload size in bytes.",
+    )
+    max_pdf_pages: int = Field(
+        default=1000,
+        ge=1,
+        le=10000,
+        description="Maximum pages accepted for PDF extraction and ingestion.",
     )
     embedding_model_name: str = Field(
         default="sentence-transformers/all-MiniLM-L6-v2",
@@ -155,6 +185,24 @@ class Settings(BaseSettings):
             INSECURE_SECRET_PREFIXES
         ):
             raise ValueError("JWT_SECRET_KEY is still a placeholder; generate a real secret.")
+
+        if self.environment == "production":
+            if any("*" in host for host in self.allowed_hosts):
+                raise ValueError("ALLOWED_HOSTS must not contain a wildcard in production.")
+            if not self.allowed_hosts:
+                raise ValueError("ALLOWED_HOSTS must be configured in production.")
+            if not self.cors_origins or "*" in self.cors_origins:
+                raise ValueError("CORS_ORIGINS must list explicit production origins.")
+            if any(not _is_valid_production_origin(origin) for origin in self.cors_origins):
+                raise ValueError(
+                    "Production CORS_ORIGINS must be valid HTTPS origins except local demonstration hosts."
+                )
+            if self.sql_echo:
+                raise ValueError("SQL_ECHO must be disabled in production.")
+            if make_url(self.database_url).username != "vaultrag_app":
+                raise ValueError(
+                    "Production DATABASE_URL must use the least-privilege vaultrag_app role."
+                )
 
         return self
 

@@ -1,6 +1,7 @@
 """Embedding validation and one real local-model integration test."""
 
 import math
+import os
 from typing import Any
 
 import numpy as np
@@ -62,6 +63,12 @@ def test_generate_embeddings_empty_batch_does_not_load_model():
 
 
 def test_real_local_model_generates_384_dimension_normalized_vectors():
+    if os.environ.get("VAULTRAG_RUN_MODEL_INTEGRATION") != "1":
+        pytest.skip(
+            "Set VAULTRAG_RUN_MODEL_INTEGRATION=1 after caching the embedding model "
+            "to run the optional real-model integration test."
+        )
+
     settings = get_settings()
     service = EmbeddingService(
         model_name=settings.embedding_model_name,

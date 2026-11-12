@@ -1,0 +1,3 @@
+Method,Name,Error,Occurrences
+POST,rag/ask,HTTPError('503 Server Error: Service Unavailable for url: rag/ask'),5
+GET,auth/me,HTTPError('429 Client Error: Too Many Requests for url: auth/me'),20

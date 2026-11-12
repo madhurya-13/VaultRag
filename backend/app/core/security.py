@@ -55,6 +55,8 @@ class AccessTokenClaims(BaseModel):
 
     sub: UUID
     tenant_id: UUID
+    iss: str
+    aud: str | list[str]
     roles: list[str] = []
     type: str
     jti: str | None = None
@@ -111,6 +113,8 @@ def create_access_token(
     payload = {
         "sub": str(user_id),
         "tenant_id": str(tenant_id),
+        "iss": settings.jwt_issuer,
+        "aud": settings.jwt_audience,
         "roles": roles,
         "type": "access",
         "iat": int(now.timestamp()),
@@ -138,8 +142,18 @@ def decode_access_token(token: str) -> AccessTokenClaims:
             token,
             settings.jwt_secret_key.get_secret_value(),
             algorithms=[settings.jwt_algorithm],  # explicit allow-list
+            issuer=settings.jwt_issuer,
+            audience=settings.jwt_audience,
             options={
-                "require": ["exp", "iat", "sub", "tenant_id", "type"],
+                "require": [
+                    "exp",
+                    "iat",
+                    "sub",
+                    "tenant_id",
+                    "type",
+                    "iss",
+                    "aud",
+                ],
                 "verify_exp": True,
                 "verify_iat": True,
                 "verify_signature": True,

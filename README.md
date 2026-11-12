@@ -1,6 +1,6 @@
 # VaultRAG - Permission-Aware Multi-Tenant RAG Platform
 
-> **Milestones 1-5: tenant-isolated authorization, ingestion, permission-aware RAG, and a full-stack employee/admin/security interface**
+> **Milestones 1-6: tenant-isolated authorization, ingestion, permission-aware RAG, full-stack interface, security evaluation, and local container deployment**
 
 VaultRAG is a multi-tenant platform where organizations share one application
 while users, roles, documents, chunks, embeddings, retrieval context, generated
@@ -18,6 +18,14 @@ Milestone 5 adds the responsive employee workspace, AI assistant, document
 management, user and role directory, and tenant-scoped security monitoring.
 The frontend is documented in [frontend/README.md](frontend/README.md). A
 production background-worker queue remains out of scope.
+
+Milestone 6 adds a named PostgreSQL security regression suite, JWT issuer and
+audience verification, production host/CORS checks, safe model-output rendering
+coverage, Nginx rate limits, full local Compose services, CI security scans,
+Locust load scenarios, a synthetic tenant-isolation demo, and deployment and
+threat-model documentation. Start with the [deployment guide](docs/deployment/DEPLOYMENT_GUIDE.md),
+[security test report](docs/security/SECURITY_TEST_REPORT.md), and
+[demo script](docs/demo/DEMO_SCRIPT.md). No cloud resources are deployed by this repository.
 
 **Primary security guarantee:** unauthorized document chunk text is never
 selected for context construction and is never sent to the language model.
@@ -246,6 +254,7 @@ Milestone 3 ingestion and embedding variables:
 |---|---|---|
 | `DOCUMENT_STORAGE_DIR` | `private_documents` | Private local storage root. Never serve it publicly. |
 | `MAX_UPLOAD_SIZE_BYTES` | `26214400` (25 MiB) | Maximum streamed PDF size. |
+| `MAX_PDF_PAGES` | `1000` | Maximum PDF pages accepted for extraction and ingestion. |
 | `EMBEDDING_MODEL_NAME` | `sentence-transformers/all-MiniLM-L6-v2` | Local model name. |
 | `EMBEDDING_MODEL_VERSION` | `main` | Version label stored with documents/chunks. |
 | `EMBEDDING_DIMENSION` | `384` | Must remain 384 because the DB column is `VECTOR(384)`. |
@@ -332,6 +341,24 @@ cd backend
 alembic upgrade head
 uvicorn app.main:app --reload
 ```
+
+After creating an organization through `POST /organizations/register`, create
+its first administrator using the out-of-band operator command below. The
+department and clearance are required because ABAC denies document access when
+identity attributes are missing. Clearance is set by the operator at bootstrap;
+the administrator cannot raise their own clearance later.
+
+```powershell
+python -m app.scripts.bootstrap_admin `
+  --tenant-id <TENANT_UUID> `
+  --username alice `
+  --email alice@example.com `
+  --department FINANCE `
+  --clearance-level 3
+```
+
+Omit `--password` to be prompted securely. Set department and clearance to the
+person’s actual synthetic/demo role; do not assign maximum clearance by default.
 
 - Swagger: <http://127.0.0.1:8000/docs>
 - Health: <http://127.0.0.1:8000/health>
@@ -855,11 +882,11 @@ pytest -q
 alembic check
 ```
 
-The opt-in test is `test_ollama_integration.py`; it requires
-`OLLAMA_INTEGRATION=1`, a running Ollama server and the configured model. That
-real test passed against the official `ollama/ollama` Docker container with
-`qwen2.5:3b`; the mocked Ollama tests and the real local embedding-model test
-also pass.
+The opt-in Ollama test is `test_ollama_integration.py`; it requires
+`OLLAMA_INTEGRATION=1`, a running Ollama server and the configured model. The
+real embedding-model smoke test requires `VAULTRAG_RUN_MODEL_INTEGRATION=1` and
+the cached MiniLM weights. The default suite uses deterministic mock embeddings
+and does not download models unexpectedly.
 
 Milestone 5 frontend setup, API mapping, browser tests and UI limitations are
 documented in [frontend/README.md](frontend/README.md). Frontend unit tests use
