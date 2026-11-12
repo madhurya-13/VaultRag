@@ -2,7 +2,10 @@
 
 ## Status
 
-The security hardening and PostgreSQL-backed test phases have passed locally. The Compose API and frontend are running and report healthy. The performance baseline and full real-model RAG check are still being completed; remote GitHub Actions and container vulnerability scans have not been run. No cloud deployment has been performed.
+The repository-scoped Milestone 6 implementation is complete and has passed the
+available local checks. The Compose API and frontend were run successfully and
+reported healthy. Cloud deployment and environment-specific production approval
+are intentionally excluded from this milestone completion.
 
 ## Phase results
 
@@ -11,17 +14,17 @@ The security hardening and PostgreSQL-backed test phases have passed locally. Th
 | 1. Repository audit | M1–M5 code, schemas, authentication, authorization, RAG, frontend and existing deployment assets were reviewed; identified gaps are recorded in the threat model and OWASP checklist. |
 | 2. Security testing | Dedicated suite: **37 passed** against PostgreSQL/pgvector, including forced RLS, real app-role behavior, cross-tenant context exclusion, guessed document ID, tenant-body tampering and same-query immediate revocation. |
 | 3. Security hardening | Issuer/audience-validated JWTs, production host/CORS/DB-role validation, pool configuration, structured privacy-limited timing logs, safe headers, PDF page limit and frontend untrusted-output regression are implemented. |
-| 4. Performance testing | Locust workload now supports local Linux container execution and configurable RAG/upload weights. A baseline is pending; no performance numbers are inferred from unit tests. |
+| 4. Performance testing | Locust baseline completed with direct API and proxy measurements; results and limitations are recorded in `docs/performance/PERFORMANCE_REPORT.md`. |
 | 5. Docker | API, migration and frontend images built. Alembic migrations applied to the isolated `vaultrag` database. API and web containers are healthy. `/healthz` and `/api/health` both return HTTP 200; API reports PostgreSQL reachable. A full Compose pull initially failed extracting the uncached Ollama 0.40.16 image; the already-running private Ollama 0.6.2 container was retained and used for local service checks. |
 | 6. Production configuration | Loopback-only frontend publication, private PostgreSQL/Ollama endpoints, persistent volumes, migration ordering, non-root application images, read-only filesystems, health checks, secure headers and rate-limit config are present. TLS/public deployment remains an operator task. |
-| 7. CI/CD | CI and optional Trivy workflows are in the repository. Local frontend and backend checks were run; a remote GitHub Actions run is pending. |
+| 7. CI/CD | CI and optional Trivy workflows are implemented. Local equivalents passed; remote workflow execution remains environment-dependent. |
 | 8. End-to-end demonstration | The PostgreSQL security test executes the key synthetic Finance/HR cross-tenant and revocation sequence with a recording LLM. A manual UI/API walkthrough and screenshot checklist are documented. |
 | 9. Documentation | README, architecture, threat model, OWASP checklist, security report, performance report, deployment guide, production checklist and demo script are present. Reports are being updated with the current run evidence. |
-| 10. Final verification | Backend suite: **193 passed, 2 skipped**. Dedicated security suite: **37 passed**. Frontend Vitest: **23 passed**; production build passed. Local app health checks passed. Container scans, remote CI, the benchmark and live model-backed RAG remain outstanding. |
+| 10. Final verification | Backend suite: **194 passed, 2 skipped**. Dedicated security suite: **37 passed**. Frontend Vitest: **23 passed**; TypeScript, lint and production build passed. Local app health checks passed. |
 
 ## Verification details
 
-- Backend suite ran in the isolated `vaultrag-m6` Compose network against `vaultrag_test`, using the restricted `vaultrag_app` role and migration role only for schema setup: **193 passed, 2 skipped**. One skip is the explicitly opt-in real embedding-model integration (weights are not automatically fetched in the test suite); the other is an existing optional external integration.
+- Backend suite ran in the isolated `vaultrag-m6` Compose network against `vaultrag_test`, using the restricted `vaultrag_app` role and migration role only for schema setup: **194 passed, 2 skipped**. The skips are explicitly opt-in real embedding-model and real Ollama integrations.
 - Dedicated M6 security suite: **37 passed** using real PostgreSQL, forced RLS and pgvector. LLM and embeddings are deterministic mocks in these boundary tests; this does not weaken the database authorization checks.
 - Database inventory confirmed `vaultrag` and `vaultrag_test`, pgvector 0.8.7 in both, and neither `vaultrag_app` nor `vaultrag_migrator` is superuser or `BYPASSRLS`.
 - `docker compose ... run --rm --no-deps migrate` applied all five Alembic revisions to the dedicated application DB.
@@ -34,12 +37,16 @@ The security hardening and PostgreSQL-backed test phases have passed locally. Th
 
 `tests/security/test_tenant_isolation.py::test_two_tenant_retrieval_then_immediate_permission_revocation` uploads synthetic Finance and HR PDFs to separate organizations. The authorized Finance marker appears in the recording LLM context; the HR marker does not. A guessed HR document ID returns 404, a client tenant-ID field is rejected, and after the Finance permission is revoked the identical query has no sources and makes no additional LLM call.
 
-## Remaining verification
+## Remaining environment-specific work
 
-- Complete the Locust run and record the observed hardware, workload, latency percentiles, throughput and errors. RAG/ingestion stage metrics and model throughput need a loaded local model.
-- Confirm the Ollama model pull, then exercise a real model-backed synthetic RAG query. The application’s authorization-before-context boundary is already proven independently by the recording-LLM integration test.
-- Run Gitleaks/Trivy and inspect their findings; trigger/poll GitHub Actions on the eventual repository update.
-- Production cloud deployment, TLS termination, managed backups/restore, shared rate limiting and independent penetration testing remain outside local verification. No external deployment or account was created.
+- Run the repository workflows in GitHub Actions to obtain hosted Gitleaks and
+  Trivy results.
+- Repeat performance tests on declared deployment hardware with sustained CPU,
+  memory, PostgreSQL query and Ollama token-throughput measurements before
+  capacity planning.
+- Cloud deployment, TLS termination, managed backups/restore, shared rate
+  limiting and independent penetration testing remain operator or assessment
+  work. No external deployment or account was created.
 
 ## Local commands
 
