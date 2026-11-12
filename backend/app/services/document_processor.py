@@ -20,6 +20,7 @@ from app.core.security_constants import (
     ERROR_NO_EXTRACTABLE_TEXT,
     ERROR_OCR_UNSUPPORTED,
     ERROR_PDF_EXTRACTION_FAILED,
+    ERROR_PDF_PAGE_LIMIT_EXCEEDED,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,11 @@ class OcrUnsupportedError(NoExtractableTextError):
     default_message = (
         "No extractable text was found. OCR is not supported in this milestone."
     )
+
+
+class PdfPageLimitError(DocumentProcessingError):
+    code = ERROR_PDF_PAGE_LIMIT_EXCEEDED
+    default_message = "The PDF exceeds the maximum supported page count"
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +135,7 @@ def extract_pdf_text(
     path: str | Path,
     *,
     min_extractable_chars: int = 50,
+    max_pages: int | None = None,
 ) -> PdfExtractionResult:
     """Extract text page by page, preserving page numbers and empty pages."""
     document = _open_pdf(path)
@@ -136,6 +143,9 @@ def extract_pdf_text(
     empty_pages: list[int] = []
     total_chars = 0
     try:
+        if max_pages is not None and document.page_count > max_pages:
+            raise PdfPageLimitError()
+
         for index in range(document.page_count):
             page_number = index + 1
             try:

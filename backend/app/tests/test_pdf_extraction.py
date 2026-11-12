@@ -6,6 +6,7 @@ from app.services.document_processor import (
     EncryptedPdfError,
     MalformedPdfError,
     OcrUnsupportedError,
+    PdfPageLimitError,
     extract_pdf_text,
     validate_pdf,
 )
@@ -39,6 +40,13 @@ def test_extract_pdf_text_preserves_pages_and_empty_pages(tmp_path):
     assert result.pages[1].text.strip() == ""
     assert result.empty_page_numbers == (2,)
     assert result.total_extractable_chars > 50
+
+
+def test_extract_pdf_text_rejects_page_count_above_configured_limit(tmp_path):
+    path = _write(tmp_path, "too-many-pages.pdf", make_pdf_bytes([DEFAULT_PDF_TEXT] * 2))
+
+    with pytest.raises(PdfPageLimitError):
+        extract_pdf_text(path, max_pages=1)
 
 
 def test_extract_pdf_text_rejects_renamed_non_pdf(tmp_path):

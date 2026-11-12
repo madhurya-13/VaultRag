@@ -220,6 +220,36 @@ def test_upload_rejects_image_only_pdf(client, db):
     assert response.status_code == 422
 
 
+def test_upload_rejects_pdf_over_page_limit_without_registering_document(
+    client, db, monkeypatch
+):
+    from app.services import document_upload
+    from app.core.config import get_settings
+
+    organization, _, token = create_admin_bundle(
+        client,
+        db,
+        organization_name="Page limit tenant",
+        email="page-limit-admin@example.com",
+    )
+    original_settings = get_settings()
+    monkeypatch.setattr(
+        document_upload,
+        "get_settings",
+        lambda: original_settings.model_copy(update={"max_pdf_pages": 1}),
+    )
+
+    response = upload_pdf(client, token, make_pdf_bytes(["Policy text " * 20] * 2))
+    assert response.status_code == 422
+    assert "page count" in response.json()["detail"].lower()
+
+    use_tenant(db, organization["tenant_id"])
+    stored = db.scalars(
+        select(Document).where(Document.tenant_id == UUID(organization["tenant_id"]))
+    ).all()
+    assert stored == []
+
+
 def test_upload_rejects_empty_file(client, db):
     _, _, token = create_admin_bundle(
         client,

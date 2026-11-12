@@ -1,30 +1,127 @@
-name: vaultrag
+name: vaultrag-m6
 
 services:
   db:
-    # pgvector/pgvector is PostgreSQL 16 plus the vector extension. The data
-    # directory is compatible with the official postgres:16 image.
     image: pgvector/pgvector:pg16
-    container_name: vaultrag-postgres
     restart: unless-stopped
     environment:
-      # Local development-only credentials. Never reuse in production.
-      POSTGRES_USER: vaultrag
-      POSTGRES_PASSWORD: vaultrag_local_dev_password
-      POSTGRES_DB: vaultrag
-    ports:
-      # Bind to loopback only: the development database must not be reachable
-      # from other machines on the network.
-      - "127.0.0.1:5432:5432"
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: postgres
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?Set APP_DB_PASSWORD in .env}
+      MIGRATOR_DB_PASSWORD: ${MIGRATOR_DB_PASSWORD:?Set MIGRATOR_DB_PASSWORD in .env}
     volumes:
       - vaultrag_pgdata:/var/lib/postgresql/data
-      # Runs once, only when the data volume is empty.
       - ./database/init.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
+      - ./database/docker-bootstrap.sh:/docker-entrypoint-initdb.d/20-bootstrap.sh:ro
+      - ./database/bootstrap_roles.sql:/bootstrap/bootstrap_roles.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U vaultrag -d vaultrag"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d vaultrag"]
       interval: 5s
       timeout: 5s
+      retries: 20
+    networks: [internal]
+    security_opt: ["no-new-privileges:true"]
+
+  ollama:
+    image: ollama/ollama:0.40.16
+    restart: unless-stopped
+    volumes:
+      - vaultrag_ollama:/root/.ollama
+    expose: ["11434"]
+    healthcheck:
+      test: ["CMD", "ollama", "--version"]
+      interval: 10s
+      timeout: 5s
       retries: 10
+      start_period: 30s
+    networks: [internal, ollama_egress]
+    security_opt: ["no-new-privileges:true"]
+
+  migrate:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: ["alembic", "upgrade", "head"]
+    environment: &app-environment
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      DATABASE_URL: postgresql+psycopg://vaultrag_app:${APP_DB_PASSWORD}@db:5432/vaultrag
+      MIGRATION_DATABASE_URL: postgresql+psycopg://vaultrag_migrator:${MIGRATOR_DB_PASSWORD}@db:5432/vaultrag
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Set JWT_SECRET_KEY in .env}
+      JWT_ISSUER: ${JWT_ISSUER:-vaultrag}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-vaultrag-api}
+      CORS_ORIGINS: '["${PUBLIC_ORIGIN:-http://localhost:3000}"]'
+      ALLOWED_HOSTS: '["${ALLOWED_HOST:-localhost}","127.0.0.1"]'
+      DOCUMENT_STORAGE_DIR: /var/lib/vaultrag/documents
+      MAX_PDF_PAGES: ${MAX_PDF_PAGES:-1000}
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:3b}
+      SQL_ECHO: "false"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-5}
+      DATABASE_MAX_OVERFLOW: ${DATABASE_MAX_OVERFLOW:-5}
+    depends_on:
+      db: {condition: service_healthy}
+    networks: [internal]
+    restart: "no"
+    security_opt: ["no-new-privileges:true"]
+
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment: *app-environment
+    volumes:
+      - vaultrag_documents:/var/lib/vaultrag/documents
+      - vaultrag_models:/var/cache/vaultrag
+    expose: ["8000"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      ollama: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks: [internal, frontend_access]
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+  web:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports: ["127.0.0.1:${WEB_PORT:-3000}:8080"]
+    depends_on:
+      api: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks: [frontend_access]
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+      - /var/cache/nginx:mode=1777
+      - /var/run:mode=1777
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
 
 volumes:
   vaultrag_pgdata:
+  vaultrag_ollama:
+  vaultrag_documents:
+  vaultrag_models:
+
+networks:
+  internal:
+    internal: true
+  frontend_access: {}
+  ollama_egress: {}

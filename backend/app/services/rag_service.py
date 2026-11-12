@@ -157,6 +157,7 @@ def answer_question(
     settings = get_settings()
     factory = session_factory or SessionLocal
     query_id = uuid4()
+    request_started = time.monotonic()
 
     if not context.user.is_active:
         raise ForbiddenError("User is inactive")
@@ -167,6 +168,7 @@ def answer_question(
     embedder = embedding_service or get_embedding_service()
 
     # Validate the question before doing expensive work and before audit events.
+    embedding_started = time.monotonic()
     try:
         query = generate_query_embedding(
             question,
@@ -190,6 +192,13 @@ def answer_question(
             logger.exception("Failed to audit embedding failure")
         raise
 
+    embedding_ms = int((time.monotonic() - embedding_started) * 1000)
+    logger.info(
+        "RAG stage=query_embedding query_id=%s duration_ms=%d",
+        query_id,
+        embedding_ms,
+    )
+
     try:
         _audit(
             context,
@@ -207,6 +216,7 @@ def answer_question(
     candidate_count = 0
     denied_count = 0
 
+    retrieval_started = time.monotonic()
     try:
         with factory() as session:
             with session.begin():
@@ -267,6 +277,16 @@ def answer_question(
             logger.exception("Failed to audit retrieval failure")
         raise ServiceUnavailableError("Permission-aware retrieval failed") from exc
 
+    retrieval_ms = int((time.monotonic() - retrieval_started) * 1000)
+    logger.info(
+        "RAG stage=retrieval_authorization query_id=%s duration_ms=%d candidates=%d authorized=%d denied=%d",
+        query_id,
+        retrieval_ms,
+        candidate_count,
+        len(authorized),
+        denied_count,
+    )
+
     if not authorized:
         return _safe_no_context(
             context,
@@ -281,12 +301,21 @@ def answer_question(
     if settings.rag_rerank_enabled:
         reranker = CrossEncoderReranker(settings.rag_reranker_model)
 
+    rerank_started = time.monotonic()
     ranked = rerank_authorized_chunks(
         authorized,
         min_similarity=settings.rag_min_similarity,
         top_n=settings.rag_context_top_n,
         question=question,
         reranker=reranker,
+    )
+    rerank_ms = int((time.monotonic() - rerank_started) * 1000)
+    logger.info(
+        "RAG stage=rerank query_id=%s duration_ms=%d authorized=%d selected=%d",
+        query_id,
+        rerank_ms,
+        len(authorized),
+        len(ranked),
     )
     if not ranked:
         return _safe_no_context(
@@ -297,10 +326,18 @@ def answer_question(
         )
 
     counter = getattr(embedder, "count_tokens", None)
+    context_started = time.monotonic()
     built = build_context(
         ranked,
         max_tokens=settings.rag_max_context_tokens,
         token_counter=counter,
+    )
+    context_ms = int((time.monotonic() - context_started) * 1000)
+    logger.info(
+        "RAG stage=context_build query_id=%s duration_ms=%d sources=%d",
+        query_id,
+        context_ms,
+        len(built.sources),
     )
     if not built.sources:
         return _safe_no_context(
@@ -358,7 +395,9 @@ def answer_question(
         raise ServiceUnavailableError("The local language model is unavailable") from exc
 
     elapsed_ms = int((time.monotonic() - started) * 1000)
+    citation_started = time.monotonic()
     citation = validate_citations(llm_response.answer, built.sources)
+    citation_ms = int((time.monotonic() - citation_started) * 1000)
     try:
         _audit(
             context,
@@ -383,6 +422,22 @@ def answer_question(
             retrieved_chunks=0,
             model=llm_response.model,
         )
+
+    logger.info(
+        "RAG stage=complete query_id=%s total_ms=%d embedding_ms=%d retrieval_authorization_ms=%d rerank_ms=%d context_build_ms=%d llm_ms=%d citation_validation_ms=%d candidates=%d authorized=%d denied=%d sources=%d",
+        query_id,
+        int((time.monotonic() - request_started) * 1000),
+        embedding_ms,
+        retrieval_ms,
+        rerank_ms,
+        context_ms,
+        elapsed_ms,
+        citation_ms,
+        candidate_count,
+        len(authorized),
+        denied_count,
+        len(built.sources),
+    )
 
     try:
         _audit(

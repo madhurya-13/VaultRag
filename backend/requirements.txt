@@ -1,7 +1,7 @@
 # VaultRAG - Milestone 4 backend dependencies
 # Pinned for reproducible installs. Python 3.11+ (tested on 3.12).
 
-fastapi==0.115.6
+fastapi==0.162.4
 uvicorn[standard]==0.34.0
 
 # Database
@@ -13,19 +13,20 @@ alembic==1.14.0
 pydantic==2.10.4
 pydantic-settings==2.7.0
 email-validator==2.2.0
-python-dotenv==1.0.1
-python-multipart==0.0.20
+python-dotenv==1.2.4
+python-multipart==0.0.33
 
 # Security
-PyJWT==2.10.1
+PyJWT==2.15.1
 argon2-cffi==23.1.0
 
 # Document ingestion / embeddings / local LLM HTTP client
 PyMuPDF==1.24.14
 pgvector==0.3.6
-sentence-transformers==3.3.1
-torch==2.5.1
+sentence-transformers==6.2.0
+transformers==5.22.2
+torch==2.15.0
 httpx==0.28.1
 
 # Testing
-pytest==8.3.4
+pytest==9.2.0

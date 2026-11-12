@@ -127,12 +127,16 @@ def test_login_returns_signed_jwt_with_expected_claims(client, db):
         token,
         settings.jwt_secret_key.get_secret_value(),
         algorithms=[settings.jwt_algorithm],
+        issuer=settings.jwt_issuer,
+        audience=settings.jwt_audience,
     )
 
     assert claims["sub"] == str(admin.user_id)
     assert claims["tenant_id"] == organization["tenant_id"]
     assert claims["roles"] == ["ADMIN"]
     assert claims["type"] == "access"
+    assert claims["iss"] == settings.jwt_issuer
+    assert claims["aud"] == settings.jwt_audience
     assert claims["exp"] > claims["iat"]
 
     me = client.get("/auth/me", headers=auth_headers(token))

@@ -225,6 +225,7 @@ def upload_document(
             extract_pdf_text(
                 stored.temp_path,
                 min_extractable_chars=get_settings().pdf_min_extractable_chars,
+                max_pages=get_settings().max_pdf_pages,
             )
         except DocumentProcessingError as exc:
             raise UnprocessableDocumentError(exc.safe_message) from exc

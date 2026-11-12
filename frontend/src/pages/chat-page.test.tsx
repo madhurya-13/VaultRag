@@ -139,4 +139,17 @@ describe('ChatPage', () => {
     )
     await waitFor(() => expect(mocks.post).not.toHaveBeenCalled())
   })
+
+  it('renders model supplied HTML as inert text', async () => {
+    const hostileAnswer = '<img src=x onerror="window.__xss=1">'
+    mocks.post.mockResolvedValue({ data: { ...answer, answer: hostileAnswer } })
+    const userEventInstance = userEvent.setup()
+    const { container } = renderChat()
+
+    await askQuestion(userEventInstance)
+
+    expect(await screen.findByText(hostileAnswer)).toBeInTheDocument()
+    expect(container.querySelector('img')).not.toBeInTheDocument()
+    expect(window).not.toHaveProperty('__xss')
+  })
 })

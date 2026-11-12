@@ -8,7 +8,9 @@ Usage (from ``backend/`` with the virtualenv active):
     python -m app.scripts.bootstrap_admin `
         --tenant-id <TENANT_UUID> `
         --username admin `
-        --email admin@technova.com
+        --email admin@example.com `
+        --department FINANCE `
+        --clearance-level 3
 
 You will be prompted for the password without echoing it. Passing
 ``--password`` is supported for automation but leaves the secret in shell
@@ -24,7 +26,14 @@ from sqlalchemy import select
 
 from app.core.database import SessionLocal, set_tenant_context
 from app.core.exceptions import AppError
-from app.models import Organization
+from app.core.security_constants import (
+    ALLOWED_DEPARTMENTS,
+    ATTR_CLEARANCE_LEVEL,
+    ATTR_DEPARTMENT,
+    ATTR_EMPLOYMENT_STATUS,
+    EMPLOYMENT_ACTIVE,
+)
+from app.models import Organization, UserAttribute
 from app.services.bootstrap import provision_initial_admin
 
 
@@ -35,6 +44,20 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tenant-id", required=True, type=UUID, help="Organization tenant_id")
     parser.add_argument("--username", required=True, help="Admin username")
     parser.add_argument("--email", required=True, help="Admin email (unique within the tenant)")
+    parser.add_argument(
+        "--department",
+        required=True,
+        type=str.upper,
+        choices=sorted(ALLOWED_DEPARTMENTS),
+        help="Initial administrator department (required ABAC attribute)",
+    )
+    parser.add_argument(
+        "--clearance-level",
+        required=True,
+        type=int,
+        choices=range(0, 6),
+        help="Initial clearance level 0-5, assigned by the server operator",
+    )
     parser.add_argument(
         "--password",
         required=False,
@@ -73,6 +96,23 @@ def main(argv: list[str] | None = None) -> int:
                 email=args.email,
                 password=password,
             )
+            # This CLI is an out-of-band operator path. Seed the minimum
+            # required ABAC attributes so the first administrator can use the
+            # UI/API. The same user cannot raise their clearance over HTTP.
+            for attribute_name, attribute_value in (
+                (ATTR_DEPARTMENT, args.department),
+                (ATTR_CLEARANCE_LEVEL, str(args.clearance_level)),
+                (ATTR_EMPLOYMENT_STATUS, EMPLOYMENT_ACTIVE),
+            ):
+                db.add(
+                    UserAttribute(
+                        tenant_id=args.tenant_id,
+                        user_id=admin.user_id,
+                        attribute_name=attribute_name,
+                        attribute_value=attribute_value,
+                        updated_by=admin.user_id,
+                    )
+                )
             db.commit()
         except AppError as exc:
             db.rollback()
@@ -87,6 +127,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  tenant_id : {admin.tenant_id}")
     print(f"  email     : {admin.email}")
     print("  role      : ADMIN")
+    print(f"  department: {args.department}")
+    print(f"  clearance : {args.clearance_level}")
     return 0
 
 

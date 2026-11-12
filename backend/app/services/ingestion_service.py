@@ -17,6 +17,7 @@ This guarantees a document is never left COMPLETED with a partial chunk set.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -367,17 +368,21 @@ def process_document(
     session_factory: SessionFactory | None = None,
 ) -> IngestionResult:
     """Run the full ingestion pipeline for one tenant-owned document."""
+    pipeline_started = time.monotonic()
+    stage_ms: dict[str, int] = {}
     factory = _session_factory(session_factory)
     settings = get_settings()
     backend = storage or get_private_storage()
     embedder = embedding_service or get_embedding_service()
 
+    claim_started = time.monotonic()
     claim = _claim_document(
         factory,
         context=context,
         document_id=document_id,
         request_meta=request_meta,
     )
+    stage_ms["claim"] = int((time.monotonic() - claim_started) * 1000)
     pages_seen = 0
 
     try:
@@ -402,15 +407,21 @@ def process_document(
                 422,
             )
 
+        extraction_started = time.monotonic()
         try:
             extraction = extract_pdf_text(
                 path,
                 min_extractable_chars=settings.pdf_min_extractable_chars,
+                max_pages=settings.max_pdf_pages,
             )
         except DocumentProcessingError as exc:
             raise _ProcessingFailure(exc.code, exc.safe_message, 422) from exc
+        stage_ms["extraction"] = int(
+            (time.monotonic() - extraction_started) * 1000
+        )
         pages_seen = extraction.total_pages
 
+        cleaning_started = time.monotonic()
         cleaned_pages: list[tuple[int, str]] = []
         meaningful_chars = 0
         for page in extraction.pages:
@@ -424,7 +435,11 @@ def process_document(
                 "No meaningful text remained after cleaning",
                 422,
             )
+        stage_ms["cleaning"] = int(
+            (time.monotonic() - cleaning_started) * 1000
+        )
 
+        chunking_started = time.monotonic()
         try:
             tokenizer = embedder.tokenizer
         except EmbeddingServiceError as exc:
@@ -444,7 +459,11 @@ def process_document(
             chunks = chunk_pages(cleaned_pages, tokenizer, chunk_config)
         except ChunkingError as exc:
             raise _ProcessingFailure(exc.code, exc.safe_message, 422) from exc
+        stage_ms["chunking"] = int(
+            (time.monotonic() - chunking_started) * 1000
+        )
 
+        embedding_started = time.monotonic()
         try:
             embeddings = embedder.generate_embeddings(
                 [chunk.chunk_text for chunk in chunks]
@@ -461,6 +480,9 @@ def process_document(
                 "Embedding count does not match chunk count",
                 503,
             )
+        stage_ms["embedding"] = int(
+            (time.monotonic() - embedding_started) * 1000
+        )
 
         model_name = getattr(embedder, "model_name", settings.embedding_model_name)
         model_version = getattr(
@@ -482,6 +504,7 @@ def process_document(
 
         # Final transaction: chunks, document totals/status and job completion
         # must all commit together.
+        persistence_started = time.monotonic()
         try:
             with factory() as session:
                 with session.begin():
@@ -597,6 +620,24 @@ def process_document(
                 "Document chunks could not be stored",
                 500,
             ) from exc
+        stage_ms["persistence"] = int(
+            (time.monotonic() - persistence_started) * 1000
+        )
+
+        logger.info(
+            "Ingestion timing document_id=%s job_id=%s total_ms=%d claim_ms=%d extraction_ms=%d cleaning_ms=%d chunking_ms=%d embedding_ms=%d persistence_ms=%d pages=%d chunks=%d",
+            document_id,
+            claim.job_id,
+            int((time.monotonic() - pipeline_started) * 1000),
+            stage_ms["claim"],
+            stage_ms["extraction"],
+            stage_ms["cleaning"],
+            stage_ms["chunking"],
+            stage_ms["embedding"],
+            stage_ms["persistence"],
+            extraction.total_pages,
+            len(chunks),
+        )
 
         return IngestionResult(
             document_id=document_id,

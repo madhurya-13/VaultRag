@@ -1,0 +1,17 @@
+.git
+.venv
+**/.venv
+**/node_modules
+**/dist
+**/playwright-report
+**/test-results
+**/.pytest_cache
+**/__pycache__
+**/.env
+**/.env.*
+!**/.env.example
+backend/private_documents
+backend/app/tests
+**/private_documents
+*.pdf
+docs

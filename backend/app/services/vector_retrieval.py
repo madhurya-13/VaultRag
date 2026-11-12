@@ -13,6 +13,8 @@ the database-level boundary.
 from __future__ import annotations
 
 import math
+import logging
+import time
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -28,6 +30,8 @@ from app.core.security_constants import (
 )
 from app.dependencies.authentication import AuthenticatedContext
 from app.models import Document, DocumentChunk, DocumentPermission
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,7 +171,14 @@ def retrieve_candidate_chunks(
         .limit(limit)
     )
 
+    query_started = time.monotonic()
     rows = db.execute(statement).all()
+    logger.info(
+        "RAG stage=vector_query duration_ms=%d top_k=%d candidates=%d",
+        int((time.monotonic() - query_started) * 1000),
+        limit,
+        len(rows),
+    )
     return [
         CandidateChunk(
             chunk_id=row.chunk_id,
@@ -198,6 +209,7 @@ def fetch_chunk_texts(
     if not chunk_ids:
         return {}
 
+    query_started = time.monotonic()
     rows = db.execute(
         select(
             DocumentChunk.chunk_id,
@@ -211,6 +223,11 @@ def fetch_chunk_texts(
             DocumentChunk.chunk_id.in_(chunk_ids),
         )
     ).all()
+    logger.info(
+        "RAG stage=authorized_text_fetch duration_ms=%d chunks=%d",
+        int((time.monotonic() - query_started) * 1000),
+        len(rows),
+    )
 
     return {
         row.chunk_id: ChunkText(
