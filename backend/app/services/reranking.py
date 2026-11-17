@@ -30,6 +30,13 @@ class RankedChunk:
     document_name: str
     text: str
     similarity: float
+    # Milestone 7 provenance. Optional so Milestone 4 callers and tests are
+    # unaffected.
+    semantic_similarity: float | None = None
+    keyword_score: float | None = None
+    fused_score: float | None = None
+    rerank_score: float | None = None
+    retrieval_sources: tuple[str, ...] = ()
 
 
 class SupportsRerank(Protocol):
@@ -64,8 +71,12 @@ class CrossEncoderReranker:
         return [float(value) for value in values]
 
 
-def _cosine_similarity(distance: float) -> float:
+def _cosine_similarity(distance: float | None) -> float:
     # pgvector cosine distance is 1 - cosine similarity for normalized vectors.
+    # Keyword-only candidates carry no cosine distance and are never treated as
+    # semantically similar.
+    if distance is None:
+        return 0.0
     return max(-1.0, min(1.0, 1.0 - float(distance)))
 
 

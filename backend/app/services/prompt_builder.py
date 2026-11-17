@@ -41,9 +41,19 @@ def _neutralize_delimiters(text: str) -> str:
     )
 
 
-def build_prompt(question: str, context: str) -> Prompt:
+def build_prompt(
+    question: str,
+    context: str,
+    *,
+    extra_instructions: str | None = None,
+) -> Prompt:
     safe_question = _neutralize_delimiters(question)
     safe_context = _neutralize_delimiters(context)
+    safe_instructions = (
+        _neutralize_delimiters(extra_instructions).strip()
+        if extra_instructions
+        else ""
+    )
 
     user = (
         "User question:\n"
@@ -59,6 +69,8 @@ def build_prompt(question: str, context: str) -> Prompt:
         "identifier(s) that support the answer. If the evidence is insufficient, "
         "say so explicitly."
     )
+    if safe_instructions:
+        user = f"{user}\n\n{safe_instructions}"
     system = SYSTEM_PROMPT
     return Prompt(
         system=system,

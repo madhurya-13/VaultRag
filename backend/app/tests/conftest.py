@@ -120,6 +120,7 @@ def _clean_tables(migration_engine):
         connection.execute(
             text(
                 "TRUNCATE TABLE "
+                "retrieval_analytics, conversation_messages, conversations, "
                 "security_audit_logs, document_chunks, document_ingestion_jobs, "
                 "document_permissions, documents, user_attributes, user_roles, "
                 "users, roles, organizations "

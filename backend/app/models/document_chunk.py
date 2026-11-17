@@ -23,6 +23,7 @@ from uuid import UUID, uuid4
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     CheckConstraint,
+    Computed,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
@@ -33,7 +34,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -59,6 +60,14 @@ class DocumentChunk(Base):
         nullable=False,
         default=dict,
         server_default=text("'{}'::jsonb"),
+    )
+    # Milestone 7 keyword retrieval. The generated tsvector is derived from the
+    # same row; it never becomes an authorization input. 'simple' is used so
+    # employee IDs, policy numbers and product codes are not stemmed away.
+    content_tsv: Mapped[str | None] = mapped_column(
+        TSVECTOR,
+        Computed("to_tsvector('simple', chunk_text)", persisted=True),
+        nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -94,6 +103,11 @@ class DocumentChunk(Base):
         Index(
             "ix_document_chunks_metadata_gin",
             text("metadata"),
+            postgresql_using="gin",
+        ),
+        Index(
+            "ix_document_chunks_content_tsv",
+            "content_tsv",
             postgresql_using="gin",
         ),
         # Optional ANN index for cosine retrieval. Benchmarked at 10k synthetic

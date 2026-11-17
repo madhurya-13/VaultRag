@@ -139,6 +139,49 @@ class Settings(BaseSettings):
         max_length=255,
     )
 
+    # ------------------------------------------------------------------
+    # Milestone 7: hybrid retrieval, query intelligence, reranking, memory
+    # ------------------------------------------------------------------
+    rag_search_mode_default: Literal["semantic", "keyword", "hybrid"] = "hybrid"
+    rag_semantic_candidates: int = Field(default=30, ge=1, le=100)
+    rag_keyword_candidates: int = Field(default=30, ge=1, le=100)
+    rag_rrf_k: int = Field(default=60, ge=1, le=1000)
+    rag_hybrid_candidates: int = Field(default=40, ge=1, le=200)
+    rag_rerank_candidates: int = Field(default=24, ge=1, le=200)
+    rag_rerank_min_score: float | None = Field(
+        default=None,
+        description=(
+            "Optional cross-encoder score floor. Unset keeps reranking as a "
+            "pure ordering step because logits are not calibrated similarity."
+        ),
+    )
+    rag_max_chunks_per_document: int = Field(default=3, ge=1, le=20)
+    rag_merge_adjacent_chunks: bool = True
+
+    rag_query_understanding_enabled: bool = True
+    rag_query_expansion_enabled: bool = True
+    rag_query_max_expansions: int = Field(default=2, ge=0, le=3)
+    rag_query_decomposition_enabled: bool = True
+    rag_query_max_subqueries: int = Field(default=4, ge=1, le=6)
+    rag_query_max_chars: int = Field(default=400, ge=50, le=2000)
+    rag_query_llm_enabled: bool = Field(
+        default=False,
+        description=(
+            "Optional Ollama-assisted query rewriting. Deterministic rewriting "
+            "is the default; generated text is only ever a search string."
+        ),
+    )
+
+    rag_conversation_history_turns: int = Field(default=6, ge=0, le=20)
+    rag_conversation_summary_turns: int = Field(default=12, ge=2, le=50)
+    rag_conversation_title_max_chars: int = Field(default=120, ge=10, le=120)
+
+    rag_analytics_enabled: bool = True
+    rag_citation_min_coverage: float = Field(default=0.25, ge=0.0, le=1.0)
+    rag_evidence_strong_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
+    rag_evidence_moderate_threshold: float = Field(default=0.50, ge=0.0, le=1.0)
+    rag_evidence_limited_threshold: float = Field(default=0.25, ge=0.0, le=1.0)
+
     # Local Ollama runtime. No paid API key is required.
     ollama_base_url: str = Field(
         default="http://localhost:11434",
@@ -238,6 +281,26 @@ class Settings(BaseSettings):
             raise ValueError("RAG_CONTEXT_TOP_N must not exceed RAG_TOP_K_MAX.")
         if not self.ollama_base_url.startswith(("http://", "https://")):
             raise ValueError("OLLAMA_BASE_URL must start with http:// or https://.")
+        if self.rag_context_top_n > self.rag_rerank_candidates:
+            raise ValueError(
+                "RAG_CONTEXT_TOP_N must not exceed RAG_RERANK_CANDIDATES."
+            )
+        if self.rag_query_max_expansions > 3:
+            raise ValueError("RAG_QUERY_MAX_EXPANSIONS must not exceed 3.")
+        if self.rag_conversation_summary_turns < self.rag_conversation_history_turns:
+            raise ValueError(
+                "RAG_CONVERSATION_SUMMARY_TURNS must be at least "
+                "RAG_CONVERSATION_HISTORY_TURNS."
+            )
+        if not (
+            self.rag_evidence_strong_threshold
+            > self.rag_evidence_moderate_threshold
+            > self.rag_evidence_limited_threshold
+            >= 0.0
+        ):
+            raise ValueError(
+                "Evidence thresholds must satisfy STRONG > MODERATE > LIMITED >= 0."
+            )
         return self
 
 

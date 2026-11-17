@@ -1,6 +1,6 @@
 # VaultRAG - Permission-Aware Multi-Tenant RAG Platform
 
-> **Milestones 1-6: tenant-isolated authorization, ingestion, permission-aware RAG, full-stack interface, security evaluation, and local container deployment**
+> **Milestones 1-7: tenant-isolated authorization, ingestion, permission-aware RAG, full-stack interface, security evaluation, local container deployment, hybrid retrieval, query intelligence, conversation memory and retrieval analytics**
 
 VaultRAG is a multi-tenant platform where organizations share one application
 while users, roles, documents, chunks, embeddings, retrieval context, generated
@@ -26,6 +26,16 @@ Locust load scenarios, a synthetic tenant-isolation demo, and deployment and
 threat-model documentation. Start with the [deployment guide](docs/deployment/DEPLOYMENT_GUIDE.md),
 [security test report](docs/security/SECURITY_TEST_REPORT.md), and
 [demo script](docs/demo/DEMO_SCRIPT.md). No cloud resources are deployed by this repository.
+
+Milestone 7 adds hybrid semantic + PostgreSQL full-text retrieval with reciprocal
+rank fusion, deterministic query understanding/rewriting/expansion/decomposition,
+optional cross-encoder reranking with adjacent-chunk merging and diversity caps,
+multi-document grouping and conflict reporting, owner-scoped conversation memory,
+post-generation citation re-authorization, evidence-quality indicators, a
+retrieval analytics API, and an offline evaluation harness. See the
+[RAG evaluation report](docs/evaluation/RAG_EVALUATION_REPORT.md) and
+[retrieval analytics guide](docs/evaluation/RETRIEVAL_ANALYTICS.md). Scores in
+that report are measured on a synthetic corpus; it is not a production benchmark.
 
 **Primary security guarantee:** unauthorized document chunk text is never
 selected for context construction and is never sent to the language model.
@@ -94,6 +104,30 @@ Detailed threat model and design decisions: [docs/SECURITY.md](docs/SECURITY.md)
 - Optional HNSW cosine index with benchmark evidence
 - Backend authorization, retrieval and ingestion test coverage. The real Ollama
   integration test is opt-in; run the current suite for checked-out results.
+
+### Milestone 7 - advanced permission-aware RAG
+
+- Hybrid retrieval: pgvector semantic candidates plus PostgreSQL full-text
+  (`content_tsv` + GIN) keyword candidates, fused with reciprocal rank fusion
+  (RRF, `k = 60`). Keyword retrieval keeps the same tenant, document, model-label
+  and current-permission predicates as semantic retrieval.
+- Query intelligence: deterministic intent detection, conversation-aware
+  rewriting, bounded expansions and multi-part decomposition. Optional
+  Ollama rewriting is disabled by default (`RAG_QUERY_LLM_ENABLED=false`);
+  generated text is only ever used as a search string.
+- Reranking: optional local cross-encoder, adjacent-chunk merging, duplicate
+  removal and a per-document diversity cap. Disabled by default.
+- Multi-document reasoning: sources grouped by document, numeric/approval
+  conflict detection, and explicit instructions not to invent a precedence rule.
+- Conversation memory: owner-scoped conversations and messages, soft delete,
+  rename/clear APIs, summary of recent turns, and citations stored as references
+  only (never chunk text).
+- Verified evidence: claim-level citation coverage, invalid citation removal,
+  post-generation re-authorization that fails closed, and qualitative evidence
+  levels (`strong`/`moderate`/`limited`/`insufficient`) that are not probabilities.
+- Evaluation and analytics: labeled synthetic dataset, deterministic benchmark,
+  tenant-scoped `retrieval_analytics` table, and `GET /rag/analytics` behind the
+  existing audit-log capability.
 
 ---
 
@@ -287,9 +321,42 @@ Milestone 4 retrieval and generation variables:
 | `OLLAMA_HEALTH_TIMEOUT_SECONDS` | `2` | Health-check timeout. |
 | `OLLAMA_MODEL_CACHE_SECONDS` | `30` | Model-availability cache. |
 
+Milestone 7 retrieval, query, conversation and evidence variables:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `RAG_SEARCH_MODE_DEFAULT` | `hybrid` | `semantic`, `keyword` or `hybrid` when the request omits `search_mode`. |
+| `RAG_SEMANTIC_CANDIDATES` | `30` | Semantic candidates per retrieval variant. |
+| `RAG_KEYWORD_CANDIDATES` | `30` | Full-text keyword candidates per retrieval variant. |
+| `RAG_RRF_K` | `60` | Reciprocal rank fusion constant. |
+| `RAG_HYBRID_CANDIDATES` | `40` | Fused candidates considered before reranking. |
+| `RAG_RERANK_CANDIDATES` | `24` | Authorized candidates passed to the reranker. |
+| `RAG_RERANK_MIN_SCORE` | unset | Optional cross-encoder score floor. Unset keeps reranking as ordering only. |
+| `RAG_MAX_CHUNKS_PER_DOCUMENT` | `3` | Diversity cap per document in the final context. |
+| `RAG_MERGE_ADJACENT_CHUNKS` | `true` | Merge overlapping/adjacent authorized chunks from one document. |
+| `RAG_QUERY_UNDERSTANDING_ENABLED` | `true` | Detect intent and entities deterministically. |
+| `RAG_QUERY_EXPANSION_ENABLED` | `true` | Generate bounded alternative search strings. |
+| `RAG_QUERY_MAX_EXPANSIONS` | `2` | Maximum expansions (0-3). |
+| `RAG_QUERY_DECOMPOSITION_ENABLED` | `true` | Split comparison/multi-part questions. |
+| `RAG_QUERY_MAX_SUBQUERIES` | `4` | Maximum retrieval variants (1-6). |
+| `RAG_QUERY_MAX_CHARS` | `400` | Maximum generated query string length. |
+| `RAG_QUERY_LLM_ENABLED` | `false` | Optional Ollama-assisted rewriting; deterministic rewriting is the default. |
+| `RAG_CONVERSATION_HISTORY_TURNS` | `6` | Recent turns loaded for conversation context. |
+| `RAG_CONVERSATION_SUMMARY_TURNS` | `12` | Turns included in the deterministic summary. |
+| `RAG_CONVERSATION_TITLE_MAX_CHARS` | `120` | Conversation title bound. |
+| `RAG_ANALYTICS_ENABLED` | `true` | Record tenant-scoped retrieval analytics. |
+| `RAG_CITATION_MIN_COVERAGE` | `0.25` | Minimum claim coverage before evidence is considered sufficient. |
+| `RAG_EVIDENCE_STRONG_THRESHOLD` | `0.75` | Strong evidence level threshold. |
+| `RAG_EVIDENCE_MODERATE_THRESHOLD` | `0.50` | Moderate evidence level threshold. |
+| `RAG_EVIDENCE_LIMITED_THRESHOLD` | `0.25` | Limited evidence level threshold. |
+
 Settings validation rejects an embedding dimension other than 384, enforces
 chunk-size relationships, rejects `RAG_TOP_K_DEFAULT > RAG_TOP_K_MAX`,
-`RAG_CONTEXT_TOP_N > RAG_TOP_K_MAX`, and requires an HTTP(S) Ollama URL.
+`RAG_CONTEXT_TOP_N > RAG_TOP_K_MAX`, and requires an HTTP(S) Ollama URL. It also
+enforces candidate ordering (`semantic`/`keyword` >= `hybrid` >= `rerank`),
+bounded query variants, and ordered evidence thresholds. The evidence score is a
+qualitative blend of coverage, relevance, diversity, citation validity and
+conflict penalties - not a calibrated probability.
 
 ### 3. Install and run Ollama
 
@@ -427,7 +494,14 @@ enabled.
 | `DELETE` | `/documents/{id}/permissions/{pid}` | ADMIN or grantee | Revoke permission |
 | `POST` | `/rag/ask` | Bearer | Permission-aware question answering |
 | `GET` | `/rag/health` | Bearer | Operational RAG dependency status |
-| `GET` | `/rag/history` | Bearer | Caller-scoped history (stateless) |
+| `GET` | `/rag/history` | Bearer | Caller-scoped persisted history |
+| `GET` | `/rag/conversations` | Bearer | List caller-owned conversations |
+| `POST` | `/rag/conversations` | Bearer | Create a conversation |
+| `GET` | `/rag/conversations/{id}` | Bearer | Read one owned conversation |
+| `PATCH` | `/rag/conversations/{id}` | Bearer | Rename a conversation |
+| `DELETE` | `/rag/conversations/{id}` | Bearer | Soft-delete a conversation |
+| `POST` | `/rag/conversations/{id}/clear` | Bearer | Clear conversation messages |
+| `GET` | `/rag/analytics` | ADMIN | Tenant-scoped retrieval analytics |
 | `GET` | `/security/audit-logs` | ADMIN | Tenant-scoped audit events |
 | `GET` | `/health` | Public | Basic health check |
 
@@ -446,21 +520,30 @@ In Swagger, click **Authorize** and paste the token.
 
 ### Permission-aware question answering
 
-`POST /rag/ask` accepts only the question and retrieval breadth:
+`POST /rag/ask` keeps the Milestone 4 payload and adds optional retrieval and
+conversation controls:
 
 ```json
 {
   "question": "What is the annual leave policy?",
-  "top_k": 10
+  "top_k": 10,
+  "search_mode": "hybrid",
+  "filters": { "department": "HR", "classification": "INTERNAL" },
+  "conversation_id": null
 }
 ```
 
-`top_k` defaults to 10 and is bounded to 1-50. `tenant_id`, roles, user ids,
-source ids and document filters are **not accepted**; unknown fields are
-rejected with `422` by the strict Pydantic model. The tenant and identity always
-come from the authenticated server-side context.
+`top_k` defaults to 10 and is bounded to 1-50. `search_mode` is `semantic`,
+`keyword` or `hybrid`. `filters` only **narrow** the documents the caller may
+already read; they are validated against the controlled vocabularies and are
+never authorization inputs. `conversation_id` must be owned by the caller.
+`tenant_id`, roles, user ids and source ids are still **not accepted**; unknown
+fields, including unknown nested filter keys, are rejected with `422` by the
+strict Pydantic model. Tenant and identity always come from the authenticated
+server-side context.
 
-Successful response:
+Successful response (Milestone 7 adds grouping, evidence and conversation keys;
+existing keys keep their meaning):
 
 ```json
 {
@@ -471,13 +554,28 @@ Successful response:
       "document_name": "HR Policy.pdf",
       "chunk_id": "b021...",
       "page_start": 1,
-      "page_end": 1
+      "page_end": 1,
+      "excerpt": "Annual leave policy: every permanent employee receives 18 days...",
+      "similarity": 0.81,
+      "rerank_score": null,
+      "matched_by": ["semantic", "keyword"]
     }
   ],
+  "source_groups": [ { "document_id": "2ed1...", "document_name": "HR Policy.pdf", "sources": [] } ],
   "retrieved_chunks": 1,
-  "model": "qwen2.5:3b"
+  "model": "qwen2.5:3b",
+  "search_mode": "hybrid",
+  "evidence": { "level": "strong", "score": 0.86, "signals": { "distinct_documents": 1 } },
+  "conflicts": [],
+  "insufficient_evidence": false,
+  "timings": { "retrieval_ms": 18, "rerank_ms": 0, "llm_ms": 940, "total_ms": 966 },
+  "conversation_id": "7b55...",
+  "message_id": "c4a2..."
 }
 ```
+
+`excerpt` is a short, bounded preview of an authorized chunk. It is never
+returned for a document that failed the current authorization check.
 
 Source metadata always comes from the backend's authorized chunk records. The
 model's document names, page numbers or source identifiers are never trusted.
@@ -534,17 +632,45 @@ Controlled failures:
 `embedding_model` is `configured` until the lazy model is loaded, then `ready`.
 The endpoint never returns secrets, prompts or chunk text.
 
-### RAG history
+### RAG history and conversations
 
-`GET /rag/history` is authenticated and caller-scoped. Milestone 4 has no
-conversation persistence table, so it returns:
+`GET /rag/history` is authenticated and caller-scoped. Milestone 7 persists
+conversations, so it returns recent exchanges from the caller's latest
+conversation with `"persistent": true`. Stored citations are re-authorized when
+read: a document whose permission was revoked no longer appears in history.
 
 ```json
-{"items": [], "persistent": false}
+{
+  "items": [
+    {
+      "question": "What is the annual leave policy?",
+      "answer": "Employees receive 18 days [S1].",
+      "sources": [],
+      "conversation_id": "7b55...",
+      "evidence_level": "strong",
+      "created_at": "2026-11-17T09:12:00Z"
+    }
+  ],
+  "persistent": true
+}
 ```
 
-There is no user or tenant query parameter. Supplying unrelated query
-parameters cannot retrieve another user's history.
+Conversation endpoints are all owner-scoped; another user - even in the same
+tenant - receives `404`:
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/rag/conversations` | List up to 50 conversations with message counts |
+| `POST` | `/rag/conversations` | Create a conversation (optional title) |
+| `GET` | `/rag/conversations/{id}` | Read one conversation and its messages |
+| `PATCH` | `/rag/conversations/{id}` | Rename |
+| `DELETE` | `/rag/conversations/{id}` | Soft-delete |
+| `POST` | `/rag/conversations/{id}/clear` | Clear messages, keep the conversation |
+
+Conversation messages store citation references (document, chunk, page range)
+and the evidence level, never chunk text. `GET /rag/analytics?days=7` is
+ADMIN-only (audit-log capability) and returns tenant-scoped aggregates with no
+question, prompt or document text.
 
 ---
 
@@ -682,6 +808,8 @@ Migrations:
 
 - `1f07b971535a_milestone3_ingestion_schema.py` - ingestion and chunks
 - `4e8a1c2b7d90_add_hnsw_vector_index.py` - optional HNSW cosine index
+- `b7d4c9e2a1f0_milestone7_advanced_rag.py` - full-text column/index,
+  conversations, conversation messages and retrieval analytics (RLS + grants)
 
 ### `documents` (Milestone 3 extension)
 
@@ -1013,16 +1141,23 @@ docs/
   the official `ollama/ollama` Docker container with `qwen2.5:3b`; keep that
   container running and set `OLLAMA_INTEGRATION=1` to exercise it. Native Ollama
   installation is also supported.
-- No conversation persistence. `/rag/history` is stateless and always empty.
 - No streaming, async generation queue or background worker. Processing and
   `/rag/ask` are synchronous HTTP requests.
 - No automatic factual verification of every generated sentence. Citation
   validation proves source-id validity and backend attribution, not that the
   model's interpretation is correct. The system prompt requires abstention, but
   residual hallucination is still a model risk.
-- No query rewriting, multi-query expansion, HyDE or relevance feedback.
-- Optional cross-encoder reranking is disabled by default and has no benchmark
-  yet.
+- Query rewriting, expansion and decomposition are deterministic and
+  rule-based by default. Optional LLM rewriting is off; HyDE and relevance
+  feedback are not implemented.
+- Optional cross-encoder reranking is disabled by default. The offline
+  evaluation uses a deterministic reranking proxy, so it does **not** establish
+  real cross-encoder quality or latency. On the synthetic benchmark keyword-only
+  retrieval ranked at least as well as hybrid; see the evaluation report for the
+  negative result instead of assuming a hybrid gain.
+- The Milestone 7 offline benchmark uses a hashed lexical embedding, not MiniLM
+  and not pgvector. Production recall and latency must be measured on an
+  ingested corpus.
 - HNSW is a global index, not tenant-partitioned. Highly selective multi-tenant
   workloads may need `hnsw.ef_search`/iterative-scan tuning or a different
   retrieval architecture.

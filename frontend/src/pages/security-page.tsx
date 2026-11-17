@@ -62,6 +62,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   useAuditLogs,
+  useRetrievalAnalytics,
   useSecurityAnalytics,
   useUsers,
 } from '@/hooks/queries'
@@ -87,6 +88,7 @@ const tooltipStyle = {
 export function SecurityPage() {
   const [days, setDays] = useState(7)
   const analyticsQuery = useSecurityAnalytics(days)
+  const retrievalQuery = useRetrievalAnalytics(days)
   const usersQuery = useUsers()
   const [decision, setDecision] = useState('')
   const [action, setAction] = useState('')
@@ -202,6 +204,10 @@ export function SecurityPage() {
           <TabsTrigger value="audit">
             <History className="size-4" aria-hidden="true" />
             Audit log
+          </TabsTrigger>
+          <TabsTrigger value="retrieval">
+            <Activity className="size-4" aria-hidden="true" />
+            Retrieval
           </TabsTrigger>
         </TabsList>
 
@@ -679,6 +685,192 @@ export function SecurityPage() {
             filters. Date-range and department filters are not exposed by the
             backend, so this view does not fabricate them.
           </p>
+        </TabsContent>
+
+        <TabsContent value="retrieval" className="space-y-5">
+          {retrievalQuery.isError ? (
+            <ErrorState
+              message={getErrorMessage(retrievalQuery.error)}
+              onRetry={() => void retrievalQuery.refetch()}
+            />
+          ) : (
+            <>
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <StatCard
+                  label="Retrieval queries"
+                  value={
+                    retrievalQuery.isLoading
+                      ? '—'
+                      : retrievalQuery.data?.total_queries ?? 0
+                  }
+                  detail={`Last ${days} days`}
+                  icon={Activity}
+                />
+                <StatCard
+                  label="Citation validation"
+                  value={
+                    retrievalQuery.isLoading
+                      ? '—'
+                      : `${((retrievalQuery.data?.citation_validation_rate ?? 0) * 100).toFixed(1)}%`
+                  }
+                  detail="Answers with at least one valid citation"
+                  icon={CheckCircle2}
+                  tone="success"
+                />
+                <StatCard
+                  label="Insufficient evidence"
+                  value={
+                    retrievalQuery.isLoading
+                      ? '—'
+                      : `${((retrievalQuery.data?.insufficient_evidence_rate ?? 0) * 100).toFixed(1)}%`
+                  }
+                  detail="Abstained rather than guessing"
+                  icon={AlertTriangle}
+                  tone={
+                    (retrievalQuery.data?.insufficient_evidence_rate ?? 0) > 0.3
+                      ? 'warning'
+                      : 'default'
+                  }
+                />
+                <StatCard
+                  label="Retrieval errors"
+                  value={
+                    retrievalQuery.isLoading
+                      ? '—'
+                      : `${((retrievalQuery.data?.retrieval_error_rate ?? 0) * 100).toFixed(1)}%`
+                  }
+                  detail="Failed retrieval stages"
+                  icon={ShieldAlert}
+                  tone={(retrievalQuery.data?.retrieval_error_rate ?? 0) > 0 ? 'danger' : 'default'}
+                />
+              </div>
+
+              <div className="grid gap-5 xl:grid-cols-2">
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Search modes</CardTitle>
+                    <CardDescription>
+                      Queries by the retrieval strategy the caller requested.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="px-0">
+                    {retrievalQuery.isLoading ? (
+                      <div className="px-5">
+                        <LoadingPanel rows={4} />
+                      </div>
+                    ) : (retrievalQuery.data?.by_search_mode ?? []).length === 0 ? (
+                      <div className="px-5">
+                        <EmptyState
+                          title="No retrieval queries"
+                          description="No questions were recorded in this window."
+                          icon={<Activity className="size-5" aria-hidden="true" />}
+                        />
+                      </div>
+                    ) : (
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Mode</TableHead>
+                            <TableHead className="text-right">Queries</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {(retrievalQuery.data?.by_search_mode ?? []).map((item) => (
+                            <TableRow key={item.mode}>
+                              <TableCell className="text-xs">{titleCase(item.mode)}</TableCell>
+                              <TableCell className="text-right font-mono text-xs">
+                                {item.count}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    )}
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Daily retrieval volume</CardTitle>
+                    <CardDescription>
+                      Queries and retrieval-stage errors per day.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="px-0">
+                    {retrievalQuery.isLoading ? (
+                      <div className="px-5">
+                        <LoadingPanel rows={4} />
+                      </div>
+                    ) : (retrievalQuery.data?.daily ?? []).length === 0 ? (
+                      <div className="px-5">
+                        <EmptyState
+                          title="No daily data"
+                          description="Retrieval analytics appear after the first question."
+                          icon={<History className="size-5" aria-hidden="true" />}
+                        />
+                      </div>
+                    ) : (
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Day</TableHead>
+                            <TableHead className="text-right">Queries</TableHead>
+                            <TableHead className="text-right">Errors</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {(retrievalQuery.data?.daily ?? []).map((point) => (
+                            <TableRow key={point.date}>
+                              <TableCell className="text-xs">
+                                {format(new Date(point.date), 'MMM d')}
+                              </TableCell>
+                              <TableCell className="text-right font-mono text-xs">
+                                {point.queries}
+                              </TableCell>
+                              <TableCell className="text-right font-mono text-xs">
+                                {point.errors}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Latency</CardTitle>
+                  <CardDescription>
+                    Server-measured aggregate timings; no prompt or document text is stored.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="grid gap-3 sm:grid-cols-3">
+                  {[
+                    ['Average retrieval', retrievalQuery.data?.average_retrieval_ms ?? 0],
+                    ['Average total', retrievalQuery.data?.average_total_ms ?? 0],
+                    ['p95 total', retrievalQuery.data?.p95_total_ms ?? 0],
+                  ].map(([label, value]) => (
+                    <div key={String(label)} className="rounded-lg border border-border/60 bg-muted/15 p-3">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+                        {label}
+                      </p>
+                      <p className="mt-1 font-mono text-lg text-foreground">
+                        {retrievalQuery.isLoading ? '—' : `${Number(value).toFixed(1)} ms`}
+                      </p>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+
+              <p className="text-[11px] leading-5 text-muted-foreground">
+                These aggregates contain no question text, prompts, chunk text or
+                document names. They are tenant-scoped and require the audit-log
+                capability, which only ADMIN holds by default.
+              </p>
+            </>
+          )}
         </TabsContent>
       </Tabs>
 

@@ -7,36 +7,37 @@ stage only for chunk IDs that passed current authorization.
 
 Every query in this module relies on the existing transaction-local RLS
 context. Explicit tenant predicates are present as defence in depth; RLS remains
-the database-level boundary.
+the database-level boundary. Keyword retrieval uses the same shared predicate
+builder (``app.services.rag.retrieval_predicates``).
 """
 
 from __future__ import annotations
 
-import math
 import logging
+import math
 import time
 from dataclasses import dataclass
 from uuid import UUID
 
-from sqlalchemy import and_, exists, func, or_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.exceptions import BadRequestError, ServiceUnavailableError
-from app.core.security_constants import (
-    DOC_STATUS_COMPLETED,
-    PERMISSION_READ,
-    ROLE_ADMIN,
-)
 from app.dependencies.authentication import AuthenticatedContext
-from app.models import Document, DocumentChunk, DocumentPermission
+from app.models import Document, DocumentChunk
+from app.schemas.rag import RAGFilters
+from app.services.rag.retrieval_predicates import (
+    candidate_where_clause,
+    document_join_condition,
+)
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
 class CandidateChunk:
-    """A vector-search row with no chunk text attached."""
+    """A retrieval row with no chunk text attached."""
 
     chunk_id: UUID
     tenant_id: UUID
@@ -52,6 +53,14 @@ class CandidateChunk:
     document_is_active: bool
     processing_status: str
     embedding_model: str | None
+    # Additive Milestone 7 provenance. Keyword candidates leave
+    # ``semantic_similarity`` as None so a cosine threshold is never applied to
+    # a non-semantic match.
+    semantic_similarity: float | None = None
+    keyword_score: float | None = None
+    fused_score: float | None = None
+    retrieval_sources: tuple[str, ...] = ()
+    retrieval_rank: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,7 +84,9 @@ def validate_top_k(top_k: int) -> int:
     return top_k
 
 
-def _validate_query_vector(query_embedding: list[float], dimension: int = 384) -> list[float]:
+def _validate_query_vector(
+    query_embedding: list[float], dimension: int = 384
+) -> list[float]:
     if len(query_embedding) != dimension:
         raise ServiceUnavailableError(
             "The query embedding dimension does not match the vector column"
@@ -93,6 +104,7 @@ def retrieve_candidate_chunks(
     top_k: int,
     model_label: str,
     role_ids: frozenset[UUID],
+    filters: RAGFilters | None = None,
 ) -> list[CandidateChunk]:
     """Return authorized-by-SQL *candidates* without selecting chunk text.
 
@@ -100,6 +112,7 @@ def retrieve_candidate_chunks(
     * tenant equality on both chunk and document;
     * active and fully processed parent document;
     * matching embedding model label;
+    * any validated metadata filters (narrowing only);
     * an active, unexpired READ permission for the user or one of their
       current roles, unless the caller currently holds ADMIN.
 
@@ -111,35 +124,6 @@ def retrieve_candidate_chunks(
         raise ServiceUnavailableError("The query embedding model is not configured")
 
     distance = DocumentChunk.embedding.cosine_distance(vector).label("distance")
-
-    filters = [
-        DocumentChunk.tenant_id == context.tenant_id,
-        Document.tenant_id == context.tenant_id,
-        Document.is_active.is_(True),
-        Document.processing_status == DOC_STATUS_COMPLETED,
-        Document.embedding_model == model_label,
-    ]
-
-    if ROLE_ADMIN not in context.roles:
-        subject_conditions = [DocumentPermission.user_id == context.user.user_id]
-        if role_ids:
-            subject_conditions.append(DocumentPermission.role_id.in_(list(role_ids)))
-        active_permission = exists(
-            select(1)
-            .select_from(DocumentPermission)
-            .where(
-                DocumentPermission.tenant_id == DocumentChunk.tenant_id,
-                DocumentPermission.document_id == DocumentChunk.document_id,
-                DocumentPermission.permission_type == PERMISSION_READ,
-                DocumentPermission.is_active.is_(True),
-                or_(
-                    DocumentPermission.expires_at.is_(None),
-                    DocumentPermission.expires_at > func.now(),
-                ),
-                or_(*subject_conditions),
-            )
-        )
-        filters.append(active_permission)
 
     statement = (
         select(
@@ -159,14 +143,15 @@ def retrieve_candidate_chunks(
             Document.embedding_model,
         )
         .select_from(DocumentChunk)
-        .join(
-            Document,
-            and_(
-                Document.tenant_id == DocumentChunk.tenant_id,
-                Document.document_id == DocumentChunk.document_id,
-            ),
+        .join(Document, document_join_condition())
+        .where(
+            *candidate_where_clause(
+                context,
+                model_label=model_label,
+                role_ids=role_ids,
+                filters=filters,
+            )
         )
-        .where(*filters)
         .order_by(distance.asc(), DocumentChunk.chunk_id.asc())
         .limit(limit)
     )
@@ -195,8 +180,11 @@ def retrieve_candidate_chunks(
             document_is_active=row.document_is_active,
             processing_status=row.processing_status,
             embedding_model=row.embedding_model,
+            semantic_similarity=max(-1.0, min(1.0, 1.0 - float(row.distance))),
+            retrieval_sources=("semantic",),
+            retrieval_rank=rank,
         )
-        for row in rows
+        for rank, row in enumerate(rows, start=1)
     ]
 
 

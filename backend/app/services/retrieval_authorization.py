@@ -59,6 +59,12 @@ class AuthorizedChunk:
     distance: float
     document_name: str
     text: str
+    # Milestone 7 retrieval provenance. These fields are additive and default
+    # to a plain semantic candidate so existing callers keep working.
+    semantic_similarity: float | None = None
+    keyword_score: float | None = None
+    fused_score: float | None = None
+    retrieval_sources: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

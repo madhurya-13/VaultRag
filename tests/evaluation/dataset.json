@@ -1,0 +1,279 @@
+{
+  "name": "VaultRAG Milestone 7 synthetic evaluation set",
+  "version": "1.0",
+  "description": "Synthetic, non-production policy corpus with labeled gold chunks. Documents belong to tenants A and B. Every query declares the documents the simulated caller may read, so retrieval can be measured together with authorization filtering.",
+  "documents": [
+    {
+      "id": "doc-hr-leave",
+      "tenant": "A",
+      "name": "HR Leave Policy",
+      "department": "HR",
+      "chunks": [
+        {
+          "id": "hr-leave-1",
+          "page": 2,
+          "text": "Annual leave policy: every permanent HR employee receives 18 days of annual leave each year. Leave approval is granted by the HR manager."
+        }
+      ]
+    },
+    {
+      "id": "doc-finance-leave",
+      "tenant": "A",
+      "name": "Finance Leave Policy",
+      "department": "FINANCE",
+      "chunks": [
+        {
+          "id": "fin-leave-1",
+          "page": 4,
+          "text": "Annual leave policy: every permanent Finance employee receives 25 days of annual leave each year. Leave approval is granted by the Finance head."
+        }
+      ]
+    },
+    {
+      "id": "doc-finance-reimb",
+      "tenant": "A",
+      "name": "Finance Reimbursement Policy",
+      "department": "FINANCE",
+      "chunks": [
+        {
+          "id": "fin-reimb-1",
+          "page": 3,
+          "text": "Employee expense reimbursement policy POL-2026-001: eligible business travel expenses are reimbursed up to 500 USD per trip. Itemized receipts are required and manager approval is mandatory."
+        }
+      ]
+    },
+    {
+      "id": "doc-travel",
+      "tenant": "A",
+      "name": "Business Travel Guidelines",
+      "department": "OPERATIONS",
+      "chunks": [
+        {
+          "id": "travel-1",
+          "page": 2,
+          "text": "Business travel expense claims under 100 USD do not require approval. Travelers must submit receipts within 30 days."
+        }
+      ]
+    },
+    {
+      "id": "doc-security",
+      "tenant": "A",
+      "name": "Security Incident Policy",
+      "department": "SECURITY",
+      "chunks": [
+        {
+          "id": "sec-1",
+          "page": 1,
+          "text": "Security incident reporting: all suspected incidents must be reported within 1 hour. Reference case INC-2026-14 for the current escalation procedure."
+        }
+      ]
+    },
+    {
+      "id": "doc-retention",
+      "tenant": "A",
+      "name": "Data Retention Policy",
+      "department": "LEGAL",
+      "chunks": [
+        {
+          "id": "ret-1",
+          "page": 5,
+          "text": "Data retention schedule: financial records are retained for 7 years. Deletion after the retention period requires legal approval."
+        }
+      ]
+    },
+    {
+      "id": "doc-tenant-b",
+      "tenant": "B",
+      "name": "Tenant B Secret",
+      "department": "HR",
+      "chunks": [
+        {
+          "id": "b-secret-1",
+          "page": 1,
+          "text": "TENANT-B-ONLY annual leave is 30 days and the confidential merger plan is restricted to Tenant B executives."
+        }
+      ]
+    },
+    {
+      "id": "doc-hr-handbook",
+      "tenant": "A",
+      "name": "HR Handbook",
+      "department": "HR",
+      "chunks": [
+        {
+          "id": "hb-1",
+          "page": 8,
+          "text": "Probation period is 90 days. Remote work is permitted 3 days per week with manager approval."
+        }
+      ]
+    }
+  ],
+  "queries": [
+    {
+      "id": "q01-simple-factual",
+      "question": "How many annual leave days do HR employees receive?",
+      "category": "simple_factual",
+      "allowed_documents": ["doc-hr-leave"],
+      "gold_chunks": ["hr-leave-1"],
+      "required_terms": ["18 days"]
+    },
+    {
+      "id": "q02-simple-factual",
+      "question": "What is the probation period for new employees?",
+      "category": "simple_factual",
+      "allowed_documents": ["doc-hr-handbook"],
+      "gold_chunks": ["hb-1"],
+      "required_terms": ["90 days"]
+    },
+    {
+      "id": "q03-exact-keyword",
+      "question": "INC-2026-14",
+      "category": "exact_keyword",
+      "allowed_documents": ["doc-security"],
+      "gold_chunks": ["sec-1"],
+      "required_terms": ["1 hour"]
+    },
+    {
+      "id": "q04-exact-keyword",
+      "question": "POL-2026-001 reimbursement limit",
+      "category": "exact_keyword",
+      "allowed_documents": ["doc-finance-reimb"],
+      "gold_chunks": ["fin-reimb-1"],
+      "required_terms": ["500"]
+    },
+    {
+      "id": "q05-semantic",
+      "question": "time off allowance for staff",
+      "category": "semantic",
+      "allowed_documents": ["doc-hr-leave", "doc-finance-leave"],
+      "gold_chunks": ["hr-leave-1"],
+      "required_terms": ["annual leave"]
+    },
+    {
+      "id": "q06-semantic",
+      "question": "expense claim receipts",
+      "category": "semantic",
+      "allowed_documents": ["doc-finance-reimb", "doc-travel"],
+      "gold_chunks": ["fin-reimb-1", "travel-1"],
+      "required_terms": ["receipts"]
+    },
+    {
+      "id": "q07-multi-document",
+      "question": "Summarize the leave and reimbursement policies.",
+      "category": "multi_document",
+      "allowed_documents": ["doc-hr-leave", "doc-finance-reimb"],
+      "gold_chunks": ["hr-leave-1", "fin-reimb-1"],
+      "required_terms": ["annual leave", "reimbursed"]
+    },
+    {
+      "id": "q08-multi-document",
+      "question": "What are the retention and incident reporting requirements?",
+      "category": "multi_document",
+      "allowed_documents": ["doc-retention", "doc-security"],
+      "gold_chunks": ["ret-1", "sec-1"],
+      "required_terms": ["retained", "reported"]
+    },
+    {
+      "id": "q09-comparison",
+      "question": "Compare the annual leave policies of Finance and HR.",
+      "category": "comparison",
+      "allowed_documents": ["doc-hr-leave", "doc-finance-leave"],
+      "gold_chunks": ["hr-leave-1", "fin-leave-1"],
+      "required_terms": ["18 days", "25 days"]
+    },
+    {
+      "id": "q10-comparison",
+      "question": "Compare approval rules for travel expenses and leave.",
+      "category": "comparison",
+      "allowed_documents": ["doc-hr-leave", "doc-travel"],
+      "gold_chunks": ["hr-leave-1", "travel-1"],
+      "required_terms": ["approval"]
+    },
+    {
+      "id": "q11-ambiguous",
+      "question": "What about the leave policy?",
+      "category": "ambiguous",
+      "allowed_documents": ["doc-hr-leave"],
+      "gold_chunks": ["hr-leave-1"],
+      "required_terms": ["annual leave"]
+    },
+    {
+      "id": "q12-ambiguous",
+      "question": "How many days can I take?",
+      "category": "ambiguous",
+      "allowed_documents": ["doc-hr-leave"],
+      "gold_chunks": ["hr-leave-1"],
+      "required_terms": ["days"]
+    },
+    {
+      "id": "q13-insufficient",
+      "question": "What is the parental leave duration for contractors?",
+      "category": "insufficient_evidence",
+      "allowed_documents": ["doc-hr-leave", "doc-hr-handbook"],
+      "gold_chunks": [],
+      "required_terms": [],
+      "expect_empty": true
+    },
+    {
+      "id": "q14-insufficient",
+      "question": "What is the cryptocurrency policy?",
+      "category": "insufficient_evidence",
+      "allowed_documents": ["doc-security", "doc-retention"],
+      "gold_chunks": [],
+      "required_terms": [],
+      "expect_empty": true
+    },
+    {
+      "id": "q15-conflicting",
+      "question": "How many annual leave days are employees entitled to?",
+      "category": "conflicting_documents",
+      "allowed_documents": ["doc-hr-leave", "doc-finance-leave"],
+      "gold_chunks": ["hr-leave-1", "fin-leave-1"],
+      "required_terms": ["18 days", "25 days"],
+      "expect_conflict": true
+    },
+    {
+      "id": "q16-conflicting",
+      "question": "Is approval required for travel expenses under 100 USD?",
+      "category": "conflicting_documents",
+      "allowed_documents": ["doc-finance-reimb", "doc-travel"],
+      "gold_chunks": ["fin-reimb-1", "travel-1"],
+      "required_terms": ["approval"],
+      "expect_conflict": true
+    },
+    {
+      "id": "q17-permission-restricted",
+      "question": "What is the Finance annual leave policy?",
+      "category": "permission_restricted",
+      "allowed_documents": ["doc-hr-leave"],
+      "gold_chunks": ["hr-leave-1"],
+      "required_terms": ["annual leave"]
+    },
+    {
+      "id": "q18-permission-restricted",
+      "question": "What is the executive bonus policy?",
+      "category": "permission_restricted",
+      "allowed_documents": ["doc-hr-leave", "doc-hr-handbook"],
+      "gold_chunks": [],
+      "required_terms": [],
+      "expect_empty": true
+    },
+    {
+      "id": "q19-cross-tenant",
+      "question": "TENANT-B-ONLY annual leave",
+      "category": "cross_tenant_attack",
+      "allowed_documents": ["doc-hr-leave", "doc-finance-leave"],
+      "gold_chunks": ["hr-leave-1"],
+      "required_terms": ["annual leave"]
+    },
+    {
+      "id": "q20-cross-tenant",
+      "question": "confidential merger plan",
+      "category": "cross_tenant_attack",
+      "allowed_documents": ["doc-security", "doc-retention"],
+      "gold_chunks": [],
+      "required_terms": [],
+      "expect_empty": true
+    }
+  ]
+}

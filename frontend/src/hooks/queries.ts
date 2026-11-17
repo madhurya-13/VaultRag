@@ -3,11 +3,14 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import type {
   AuditLog,
+  Conversation,
+  ConversationDetail,
   Document,
   DocumentChunk,
   DocumentPermission,
   DocumentStatus,
   RagHealth,
+  RetrievalAnalytics,
   Role,
   SecurityAnalytics,
   User,
@@ -28,6 +31,10 @@ export const queryKeys = {
   securityAnalytics: (days: number) =>
     ['security', 'analytics', days] as const,
   ragHealth: ['rag', 'health'] as const,
+  conversations: ['rag', 'conversations'] as const,
+  conversation: (id: string) => ['rag', 'conversations', id] as const,
+  retrievalAnalytics: (days: number) =>
+    ['rag', 'analytics', days] as const,
 }
 
 export function useDocuments() {
@@ -184,5 +191,47 @@ export function useRagHealth(enabled = true) {
     enabled,
     staleTime: 60_000,
     retry: false,
+  })
+}
+
+export function useConversations(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.conversations,
+    queryFn: async () => {
+      const { data } = await api.get<{ conversations: Conversation[] }>(
+        '/rag/conversations',
+      )
+      return data
+    },
+    enabled,
+    staleTime: 15_000,
+  })
+}
+
+export function useConversation(conversationId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.conversation(conversationId ?? ''),
+    queryFn: async () => {
+      const { data } = await api.get<ConversationDetail>(
+        `/rag/conversations/${conversationId}`,
+      )
+      return data
+    },
+    enabled: Boolean(conversationId) && enabled,
+    staleTime: 10_000,
+  })
+}
+
+export function useRetrievalAnalytics(days: number, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.retrievalAnalytics(days),
+    queryFn: async () => {
+      const { data } = await api.get<RetrievalAnalytics>('/rag/analytics', {
+        params: { days },
+      })
+      return data
+    },
+    enabled,
+    placeholderData: keepPreviousData,
   })
 }

@@ -169,19 +169,141 @@ export interface SecurityAnalytics {
   top_actors: SecurityActorCount[]
 }
 
+export type RagSearchMode = 'semantic' | 'keyword' | 'hybrid'
+export type RagEvidenceLevel =
+  | 'strong'
+  | 'moderate'
+  | 'limited'
+  | 'insufficient'
+
+export interface RagFilters {
+  department?: string
+  document_type?: string
+  classification?: string | string[]
+  status?: string
+  uploaded_by?: string
+  date_from?: string
+  date_to?: string
+}
+
 export interface RagSource {
   document_id: string
   document_name: string
   chunk_id: string
   page_start: number
   page_end: number
+  excerpt?: string | null
+  similarity?: number | null
+  rerank_score?: number | null
+  matched_by?: string[]
+}
+
+export interface RagSourceGroup {
+  document_id: string
+  document_name: string
+  sources: RagSource[]
+}
+
+export interface RagEvidence {
+  level: RagEvidenceLevel
+  score: number
+  signals: Record<string, number | string | boolean>
+}
+
+export interface RagConflict {
+  topic: string
+  description: string
+  values: string[]
+  sources: RagSource[]
+}
+
+export interface RagTimings {
+  retrieval_ms: number
+  rerank_ms: number
+  llm_ms: number
+  total_ms: number
 }
 
 export interface RagAskResponse {
   answer: string
   sources: RagSource[]
+  source_groups?: RagSourceGroup[]
   retrieved_chunks: number
   model: string | null
+  search_mode?: RagSearchMode
+  evidence?: RagEvidence | null
+  conflicts?: RagConflict[]
+  insufficient_evidence?: boolean
+  timings?: RagTimings
+  conversation_id?: string | null
+  message_id?: string | null
+}
+
+export interface RagHistoryResponse {
+  items: Array<{
+    question: string | null
+    answer: string | null
+    sources: RagSource[]
+    conversation_id: string | null
+    evidence_level: RagEvidenceLevel | null
+    created_at: string | null
+  }>
+  persistent: boolean
+}
+
+export interface Conversation {
+  conversation_id: string
+  title: string
+  created_at: string
+  updated_at: string
+  message_count: number
+}
+
+export interface ConversationCitation {
+  document_id: string
+  chunk_id: string
+  page_start: number
+  page_end: number
+  document_name: string | null
+}
+
+export interface ConversationMessage {
+  message_id: string
+  role: string
+  content: string
+  citations: ConversationCitation[]
+  evidence_level: RagEvidenceLevel | null
+  created_at: string
+}
+
+export interface ConversationDetail {
+  conversation: Conversation
+  messages: ConversationMessage[]
+}
+
+export interface RetrievalModeCount {
+  mode: string
+  count: number
+}
+
+export interface RetrievalDailyPoint {
+  date: string
+  queries: number
+  errors: number
+}
+
+export interface RetrievalAnalytics {
+  days: number
+  since: string
+  total_queries: number
+  by_search_mode: RetrievalModeCount[]
+  average_retrieval_ms: number
+  average_total_ms: number
+  p95_total_ms: number
+  citation_validation_rate: number
+  insufficient_evidence_rate: number
+  retrieval_error_rate: number
+  daily: RetrievalDailyPoint[]
 }
 
 export interface RagHealthComponent {

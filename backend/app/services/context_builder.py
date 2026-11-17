@@ -26,6 +26,9 @@ class ContextSource:
     page_end: int
     text: str
     similarity: float
+    # Additive Milestone 7 provenance for citations and the evidence UI.
+    rerank_score: float | None = None
+    matched_by: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +112,8 @@ def build_context(
             page_end=chunk.page_end,
             text=chunk.text,
             similarity=chunk.similarity,
+            rerank_score=chunk.rerank_score,
+            matched_by=chunk.retrieval_sources,
         )
         block = _source_block(source)
         block_tokens = counter(block)
@@ -139,6 +144,8 @@ def build_context(
             page_end=chunk.page_end,
             text=truncated,
             similarity=chunk.similarity,
+            rerank_score=chunk.rerank_score,
+            matched_by=chunk.retrieval_sources,
         )
         truncated_block = _source_block(truncated_source)
         truncated_tokens = counter(truncated_block)
