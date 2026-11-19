@@ -6,6 +6,7 @@ import {
   LogOut,
   Menu,
   Moon,
+  Network,
   ShieldAlert,
   Sparkles,
   Sun,
@@ -50,6 +51,7 @@ const workspaceNav: NavItem[] = [
   { to: '/dashboard', label: 'Overview', icon: LayoutDashboard },
   { to: '/assistant', label: 'AI Assistant', icon: Sparkles },
   { to: '/documents', label: 'Documents', icon: Files },
+  { to: '/graph', label: 'Knowledge graph', icon: Network },
 ]
 
 const adminNav: NavItem[] = [
@@ -71,6 +73,7 @@ const routeLabels: Record<string, string> = {
   '/dashboard': 'Overview',
   '/assistant': 'AI Assistant',
   '/documents': 'Documents',
+  '/graph': 'Knowledge graph',
   '/admin/users': 'Users & roles',
   '/security': 'Security',
   '/forbidden': 'Access denied',

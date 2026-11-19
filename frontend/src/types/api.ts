@@ -319,3 +319,84 @@ export interface RagHealth {
 export interface ApiErrorBody {
   detail?: string | Array<{ msg?: string; loc?: Array<string | number> }>
 }
+
+// ── Knowledge graph (Milestone 8) ──────────────────────────────────────────
+
+export type KgSearchMode = 'graph' | 'graph_hybrid'
+
+export interface KgEvidence {
+  evidence_id: string
+  document_id: string
+  document_name: string
+  chunk_id: string
+  page_start: number
+  page_end: number
+  quote: string
+  confidence: number
+}
+
+export interface KgNode {
+  node_id: string
+  node_type: string
+  name: string
+  description: string | null
+  confidence: number
+  mention_count: number
+  evidence: KgEvidence[]
+}
+
+export interface KgEdge {
+  edge_id: string
+  source_node_id: string
+  target_node_id: string
+  relation_type: string
+  confidence: number
+  evidence: KgEvidence[]
+}
+
+export interface KgFinding {
+  subject: string
+  relation: string
+  object: string
+  quote: string
+  document_id: string
+  document_name: string
+  chunk_id: string
+  page_start: number
+  page_end: number
+  confidence: number
+}
+
+export interface KgQueryResponse {
+  search_mode: string
+  seed_count: number
+  denied_documents: number
+  truncated: boolean
+  depth: number
+  traversal_ms: number
+  nodes: KgNode[]
+  edges: KgEdge[]
+  findings: KgFinding[]
+  candidate_chunks: number
+}
+
+export interface KgConflictValue {
+  value: string
+  document_id: string
+  document_name: string
+  quote: string
+}
+
+export interface KgConflict {
+  conflict_id: string
+  subject: string
+  relation_type: string
+  description: string
+  status: string
+  values: KgConflictValue[]
+  detected_at: string | null
+}
+
+export interface KgConflictListResponse {
+  conflicts: KgConflict[]
+}

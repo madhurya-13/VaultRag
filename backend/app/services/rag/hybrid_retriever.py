@@ -45,10 +45,12 @@ def fuse_candidate_lists(
     *,
     semantic_lists: list[list[CandidateChunk]] | None = None,
     keyword_lists: list[list[CandidateChunk]] | None = None,
+    graph_lists: list[list[CandidateChunk]] | None = None,
     rrf_k: int = DEFAULT_RRF_K,
     limit: int,
     semantic_weight: float = 1.0,
     keyword_weight: float = 1.0,
+    graph_weight: float = 1.0,
 ) -> list[CandidateChunk]:
     """Combine semantic and keyword result lists into one candidate list."""
     if limit < 1:
@@ -77,6 +79,8 @@ def fuse_candidate_lists(
         _accumulate(ranked, label="semantic", weight=semantic_weight)
     for ranked in keyword_lists or []:
         _accumulate(ranked, label="keyword", weight=keyword_weight)
+    for ranked in graph_lists or []:
+        _accumulate(ranked, label="graph", weight=graph_weight)
 
     fused: list[CandidateChunk] = []
     for chunk_id, candidate in best.items():

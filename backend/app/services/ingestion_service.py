@@ -81,6 +81,7 @@ from app.services.embedding_service import (
     EmbeddingServiceError,
     get_embedding_service,
 )
+from app.services.graph.jobs import enqueue_graph_job
 from app.services.security_audit import log_security_event
 from app.services.storage import PrivateStorage, get_private_storage
 from app.services.text_cleaner import clean_text
@@ -610,6 +611,14 @@ def process_document(
                         ),
                         policy=POLICY_INGESTION,
                         request_meta=request_meta,
+                    )
+
+                    # Graph enrichment is queued in its own row. It can never
+                    # fail ingestion: enqueue_graph_job swallows every error.
+                    enqueue_graph_job(
+                        session,
+                        tenant_id=context.tenant_id,
+                        document_id=document_id,
                     )
         except _ProcessingFailure:
             raise

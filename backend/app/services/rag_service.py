@@ -46,6 +46,9 @@ from app.dependencies.authentication import AuthenticatedContext
 from app.schemas.rag import RAGFilters
 from app.services.context_builder import ContextSource, build_context
 from app.services.embedding_service import EmbeddingService, get_embedding_service
+from app.services.graph.analytics import record_graph_query
+from app.services.graph.authorization import load_graph_authorization_context
+from app.services.graph.retrieval import retrieve_graph
 from app.services.llm_service import OllamaLLMService, get_llm_service
 from app.services.prompt_builder import build_prompt
 from app.services.query_embedding import generate_query_embedding, validate_question
@@ -100,7 +103,10 @@ INSUFFICIENT_EVIDENCE_ANSWER = (
 )
 SessionFactory = Callable[[], Session]
 
-VALID_SEARCH_MODES = frozenset({"semantic", "keyword", "hybrid"})
+VALID_SEARCH_MODES = frozenset(
+    {"semantic", "keyword", "hybrid", "graph", "graph_hybrid"}
+)
+GRAPH_SEARCH_MODES = frozenset({"graph", "graph_hybrid"})
 MAX_QUERY_VARIANTS = 5
 MAX_KEYWORD_VARIANTS = 4
 
@@ -130,7 +136,11 @@ def _resolve_search_mode(value: str | None) -> str:
     settings = get_settings()
     mode = (value or settings.rag_search_mode_default or "hybrid").strip().lower()
     if mode not in VALID_SEARCH_MODES:
-        raise BadRequestError("search_mode must be semantic, keyword or hybrid")
+        raise BadRequestError(
+            "search_mode must be semantic, keyword, hybrid, graph or graph_hybrid"
+        )
+    if mode in GRAPH_SEARCH_MODES and not settings.knowledge_graph_enabled:
+        raise BadRequestError("The knowledge graph is not enabled")
     return mode
 
 
@@ -508,7 +518,7 @@ def answer_question(
             )
 
     semantic_variants: list[tuple[str, list[float]]] = []
-    if mode in {"semantic", "hybrid"}:
+    if mode in {"semantic", "hybrid", "graph_hybrid"}:
         semantic_variants.append((variant_texts[0], base.vector))
         for text in variant_texts[1:]:
             vector = extra_vectors.get(text)
@@ -517,7 +527,7 @@ def answer_question(
 
     keyword_variants = (
         variant_texts[:MAX_KEYWORD_VARIANTS]
-        if mode in {"keyword", "hybrid"}
+        if mode in {"keyword", "hybrid", "graph_hybrid"}
         else []
     )
 
@@ -575,9 +585,40 @@ def answer_question(
                     for text in keyword_variants
                 ]
 
+                graph_lists = []
+                graph_result = None
+                if mode in GRAPH_SEARCH_MODES:
+                    # Graph visibility is computed per request inside the same
+                    # transaction, with no cached permission decisions.
+                    graph_result = retrieve_graph(
+                        session,
+                        context,
+                        question=question,
+                        auth=load_graph_authorization_context(session, context),
+                        model_label=base.model_label,
+                        filters=filters,
+                    )
+                    if graph_result.candidates:
+                        graph_lists = [list(graph_result.candidates)]
+                    record_graph_query(
+                        session,
+                        tenant_id=context.tenant_id,
+                        user_id=context.user.user_id,
+                        search_mode=mode,
+                        seed_count=graph_result.seed_count,
+                        node_count=len(graph_result.snapshot.nodes),
+                        edge_count=len(graph_result.snapshot.edges),
+                        evidence_count=len(
+                            graph_result.snapshot.evidence_chunk_ids()
+                        ),
+                        denied_documents=graph_result.denied_documents,
+                        traversal_ms=graph_result.traversal_ms,
+                    )
+
                 candidates = fuse_candidate_lists(
                     semantic_lists=semantic_lists,
                     keyword_lists=keyword_lists,
+                    graph_lists=graph_lists,
                     rrf_k=settings.rag_rrf_k,
                     limit=settings.rag_hybrid_candidates,
                 )

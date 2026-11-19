@@ -26,7 +26,7 @@ from app.core.security_constants import (
 )
 from app.schemas.common import StrictRequestModel
 
-SearchMode = Literal["semantic", "keyword", "hybrid"]
+SearchMode = Literal["semantic", "keyword", "hybrid", "graph", "graph_hybrid"]
 EvidenceLevel = Literal["strong", "moderate", "limited", "insufficient"]
 
 _DOCUMENT_TYPE_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9 _./&()+-]{0,99}$"

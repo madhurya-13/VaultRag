@@ -142,7 +142,9 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # Milestone 7: hybrid retrieval, query intelligence, reranking, memory
     # ------------------------------------------------------------------
-    rag_search_mode_default: Literal["semantic", "keyword", "hybrid"] = "hybrid"
+    rag_search_mode_default: Literal[
+        "semantic", "keyword", "hybrid", "graph", "graph_hybrid"
+    ] = "hybrid"
     rag_semantic_candidates: int = Field(default=30, ge=1, le=100)
     rag_keyword_candidates: int = Field(default=30, ge=1, le=100)
     rag_rrf_k: int = Field(default=60, ge=1, le=1000)
@@ -181,6 +183,50 @@ class Settings(BaseSettings):
     rag_evidence_strong_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
     rag_evidence_moderate_threshold: float = Field(default=0.50, ge=0.0, le=1.0)
     rag_evidence_limited_threshold: float = Field(default=0.25, ge=0.0, le=1.0)
+
+    # ------------------------------------------------------------------
+    # Milestone 8: enterprise knowledge graph
+    # ------------------------------------------------------------------
+    # Local, deterministic extraction is the default. No paid API is required:
+    # rules always run, spaCy is used when the model is installed, and Ollama
+    # extraction is opt-in because a generated triple is untrusted input.
+    knowledge_graph_enabled: bool = True
+    knowledge_graph_extraction_method: Literal[
+        "rules", "rules_spacy", "rules_spacy_llm"
+    ] = "rules_spacy"
+    knowledge_graph_spacy_model: str = Field(
+        default="en_core_web_sm", min_length=1, max_length=100
+    )
+    knowledge_graph_llm_enabled: bool = False
+    knowledge_graph_min_confidence: float = Field(default=0.55, ge=0.0, le=1.0)
+    knowledge_graph_auto_merge_threshold: float = Field(
+        default=0.95, ge=0.5, le=1.0
+    )
+    knowledge_graph_review_threshold: float = Field(default=0.82, ge=0.0, le=1.0)
+    knowledge_graph_max_quote_chars: int = Field(default=600, ge=20, le=2000)
+    knowledge_graph_max_aliases_per_node: int = Field(default=16, ge=1, le=64)
+    knowledge_graph_max_nodes_per_chunk: int = Field(default=12, ge=1, le=50)
+    knowledge_graph_max_edges_per_chunk: int = Field(default=16, ge=0, le=100)
+
+    # Traversal is always bounded: depth, node, edge and evidence caps are
+    # enforced in the service layer, never by the caller.
+    knowledge_graph_default_depth: int = Field(default=2, ge=1, le=5)
+    knowledge_graph_max_depth: int = Field(default=3, ge=1, le=5)
+    knowledge_graph_max_nodes: int = Field(default=200, ge=10, le=500)
+    knowledge_graph_max_edges: int = Field(default=400, ge=10, le=1000)
+    knowledge_graph_max_evidence: int = Field(default=100, ge=1, le=500)
+    knowledge_graph_max_seeds: int = Field(default=8, ge=1, le=50)
+    knowledge_graph_max_documents_per_query: int = Field(
+        default=200, ge=1, le=1000
+    )
+    knowledge_graph_findings: int = Field(default=6, ge=1, le=20)
+    knowledge_graph_context_share: float = Field(default=0.25, ge=0.0, le=1.0)
+    knowledge_graph_analytics_enabled: bool = True
+
+    # Background extraction job runtime.
+    knowledge_graph_worker_poll_seconds: float = Field(default=2.0, gt=0, le=60)
+    knowledge_graph_job_max_attempts: int = Field(default=3, ge=1, le=10)
+    knowledge_graph_job_stale_seconds: int = Field(default=900, ge=30, le=86400)
 
     # Local Ollama runtime. No paid API key is required.
     ollama_base_url: str = Field(
@@ -301,6 +347,30 @@ class Settings(BaseSettings):
             raise ValueError(
                 "Evidence thresholds must satisfy STRONG > MODERATE > LIMITED >= 0."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_knowledge_graph_settings(self) -> "Settings":
+        if self.knowledge_graph_default_depth > self.knowledge_graph_max_depth:
+            raise ValueError(
+                "KNOWLEDGE_GRAPH_DEFAULT_DEPTH must not exceed "
+                "KNOWLEDGE_GRAPH_MAX_DEPTH."
+            )
+        if not (
+            self.knowledge_graph_review_threshold
+            <= self.knowledge_graph_auto_merge_threshold
+        ):
+            raise ValueError(
+                "KNOWLEDGE_GRAPH_REVIEW_THRESHOLD must not exceed "
+                "KNOWLEDGE_GRAPH_AUTO_MERGE_THRESHOLD."
+            )
+        if self.knowledge_graph_context_share > 0.6:
+            raise ValueError(
+                "KNOWLEDGE_GRAPH_CONTEXT_SHARE must not exceed 0.6 so document "
+                "evidence always keeps the majority of the context budget."
+            )
+        if self.ollama_max_output_tokens < 1:
+            raise ValueError("OLLAMA_MAX_OUTPUT_TOKENS must be positive.")
         return self
 
 

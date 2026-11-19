@@ -26,6 +26,11 @@ const DocumentsPage = lazy(() =>
     default: module.DocumentsPage,
   })),
 )
+const GraphPage = lazy(() =>
+  import('@/pages/graph-page').then((module) => ({
+    default: module.GraphPage,
+  })),
+)
 const SecurityPage = lazy(() =>
   import('@/pages/security-page').then((module) => ({
     default: module.SecurityPage,
@@ -48,6 +53,7 @@ export default function App() {
           <Route path="dashboard" element={<DashboardPage />} />
           <Route path="assistant" element={<ChatPage />} />
           <Route path="documents" element={<DocumentsPage />} />
+          <Route path="graph" element={<GraphPage />} />
 
           <Route
             element={

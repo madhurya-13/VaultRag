@@ -84,7 +84,8 @@ class RetrievalAnalytics(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "search_mode IN ('semantic', 'keyword', 'hybrid')",
+            "search_mode IN ('semantic', 'keyword', 'hybrid', 'graph', "
+            "'graph_hybrid')",
             name="ck_retrieval_analytics_mode",
         ),
         CheckConstraint(

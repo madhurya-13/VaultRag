@@ -86,6 +86,15 @@ class DocumentChunk(Base):
             "chunk_index",
             name="uq_document_chunks_document_index",
         ),
+        # Milestone 8: knowledge_evidence references a chunk with the full
+        # composite key (tenant_id, document_id, chunk_id) so a graph claim can
+        # never point at another tenant's chunk text.
+        UniqueConstraint(
+            "tenant_id",
+            "document_id",
+            "chunk_id",
+            name="uq_document_chunks_tenant_document_chunk",
+        ),
         CheckConstraint("chunk_index >= 0", name="ck_document_chunks_index"),
         CheckConstraint(
             "page_start >= 1 AND page_end >= page_start",

@@ -26,6 +26,7 @@ from app.routes import (
     attributes,
     auth,
     documents,
+    knowledge_graph,
     organizations,
     rag,
     roles,
@@ -182,5 +183,6 @@ app.include_router(users.router)
 app.include_router(roles.router)
 app.include_router(attributes.router)
 app.include_router(documents.router)
+app.include_router(knowledge_graph.router)
 app.include_router(rag.router)
 app.include_router(security.router)

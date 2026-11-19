@@ -6,6 +6,17 @@ from app.models.document import Document
 from app.models.document_chunk import DocumentChunk
 from app.models.document_ingestion_job import DocumentIngestionJob
 from app.models.document_permission import DocumentPermission
+from app.models.entity_alias import EntityAlias
+from app.models.knowledge_edge import KnowledgeEdge
+from app.models.knowledge_evidence import KnowledgeEvidence
+from app.models.knowledge_extraction_job import KnowledgeExtractionJob
+from app.models.knowledge_governance import (
+    KnowledgeConflict,
+    KnowledgeEntityMerge,
+    KnowledgeEntityReview,
+)
+from app.models.knowledge_node import KnowledgeNode
+from app.models.knowledge_query_analytics import KnowledgeQueryAnalytics
 from app.models.organization import Organization
 from app.models.retrieval_analytics import RetrievalAnalytics
 from app.models.role import Role
@@ -21,6 +32,15 @@ __all__ = [
     "DocumentChunk",
     "DocumentIngestionJob",
     "DocumentPermission",
+    "EntityAlias",
+    "KnowledgeConflict",
+    "KnowledgeEdge",
+    "KnowledgeEvidence",
+    "KnowledgeEntityMerge",
+    "KnowledgeEntityReview",
+    "KnowledgeExtractionJob",
+    "KnowledgeNode",
+    "KnowledgeQueryAnalytics",
     "Organization",
     "RetrievalAnalytics",
     "Role",
