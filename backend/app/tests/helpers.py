@@ -377,6 +377,17 @@ def tenant_user_with_attributes(
 # ---------------------------------------------------------------------------
 
 
+# Extraction treats a PDF below ``PDF_MIN_EXTRACTABLE_CHARS`` (50) as
+# image-only. Several retrieval tests use a single short sentence as their whole
+# corpus, which is real text but below that guard, so the fixture pads such a
+# corpus with neutral text. Blank and image-only fixtures keep zero text, which
+# is what the OCR-rejection tests exercise.
+SHORT_PDF_FILLER = (
+    " This synthetic document is intentionally verbose so that it is accepted "
+    "as an extractable, text-based PDF rather than an image-only scan."
+)
+
+
 def make_pdf_bytes(
     pages: list[str] | None = None,
     *,
@@ -384,7 +395,11 @@ def make_pdf_bytes(
     image_only: bool = False,
 ) -> bytes:
     """Create a real PDF in memory for upload/extraction tests."""
-    page_texts = pages or [DEFAULT_PDF_TEXT]
+    page_texts = list(pages or [DEFAULT_PDF_TEXT])
+    if not image_only:
+        extractable_chars = len(re.sub(r"\s+", "", "".join(page_texts)))
+        if 0 < extractable_chars < 50:
+            page_texts[-1] = page_texts[-1].rstrip() + SHORT_PDF_FILLER
     document = fitz.open()
     try:
         for text in page_texts:

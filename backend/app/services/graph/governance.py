@@ -294,11 +294,14 @@ def split_alias(
         extraction_confidence=alias_row.extraction_confidence,
         mention_count=0,
     )
-    db.add(new_node)
+    # The insert may violate the unique node identity constraint. Roll back a
+    # savepoint rather than the session so the caller's transaction (and every
+    # other unit of work in it) stays intact and can still be committed.
     try:
-        db.flush()
+        with db.begin_nested():
+            db.add(new_node)
+            db.flush()
     except IntegrityError as exc:
-        db.rollback()
         raise BadRequestError("A node for that alias already exists") from exc
 
     # Only evidence whose quote actually contains the alias moves; everything

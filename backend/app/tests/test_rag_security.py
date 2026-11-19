@@ -364,4 +364,6 @@ def test_history_is_authenticated_user_scoped(client, db, monkeypatch):
     assert hr_history.status_code == 200
     assert admin_history.json()["items"] == []
     assert hr_history.json()["items"] == []
-    assert admin_history.json()["persistent"] is False
+    # Milestone 7 persists caller-owned conversations, so history is persistent
+    # while still being empty for a caller who has not asked anything yet.
+    assert admin_history.json()["persistent"] is True

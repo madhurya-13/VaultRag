@@ -30,6 +30,10 @@ from app.core.config import get_settings
 from app.core.security_constants import (
     DOC_STATUS_COMPLETED,
     ERROR_KG_EXTRACTION_FAILED,
+    KG_EXTRACTION_LLM,
+    KG_EXTRACTION_METHODS,
+    KG_EXTRACTION_RULES,
+    KG_EXTRACTION_SPACY,
     KG_JOB_STATUS_COMPLETED,
     KG_JOB_STATUS_FAILED,
     KG_JOB_STATUS_PENDING,
@@ -59,6 +63,30 @@ logger = logging.getLogger(__name__)
 
 MAX_ERROR_MESSAGE_CHARS = 500
 
+# The settings field uses snake_case (``rules_spacy``) because it is operator
+# facing; the job row stores the canonical label enforced by the check
+# constraint. Translating here keeps both vocabularies honest.
+_METHOD_LABELS: dict[str, str] = {
+    "rules": KG_EXTRACTION_RULES,
+    "rules_spacy": KG_EXTRACTION_SPACY,
+    "rules_spacy_llm": KG_EXTRACTION_LLM,
+}
+
+
+def extraction_method_label(method: str | None = None) -> str:
+    """Canonical, constraint-valid extraction label for a job row."""
+    configured = (method or get_settings().knowledge_graph_extraction_method)
+    configured = str(configured).strip()
+    if configured in KG_EXTRACTION_METHODS:
+        return configured
+    label = _METHOD_LABELS.get(configured.lower())
+    if label is None:
+        logger.warning(
+            "Unknown knowledge graph extraction method %r; using rules", configured
+        )
+        return KG_EXTRACTION_RULES
+    return label
+
 
 # ---------------------------------------------------------------------------
 # Enqueue / claim
@@ -77,7 +105,7 @@ def enqueue_graph_job(
     if not settings.knowledge_graph_enabled:
         return None
 
-    extraction_method = method or settings.knowledge_graph_extraction_method
+    extraction_method = extraction_method_label(method)
     try:
         with db.begin_nested():
             job = KnowledgeExtractionJob(
