@@ -400,3 +400,110 @@ export interface KgConflict {
 export interface KgConflictListResponse {
   conflicts: KgConflict[]
 }
+
+// ── Enterprise integrations (Milestone 9) ──────────────────────────────────
+
+export interface IntegrationProviderInfo {
+  provider: string
+  display_name: string
+  available: boolean
+  unavailable_reason: string | null
+  capabilities: string[]
+  supports_oauth: boolean
+}
+
+export interface IntegrationCredentialSummary {
+  configured: boolean
+  scopes: string | null
+  token_expires_at: string | null
+  updated_at: string
+  revoked_at: string | null
+}
+
+export interface Integration {
+  integration_id: string
+  provider: string
+  provider_display_name: string
+  integration_name: string
+  connection_status: string
+  permission_sync_mode: string
+  sync_enabled: boolean
+  sync_interval_minutes: number
+  next_sync_at: string | null
+  last_sync_at: string | null
+  configuration: Record<string, unknown>
+  credential: IntegrationCredentialSummary | null
+  supports_oauth: boolean
+  webhook_configured: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface IntegrationRepository {
+  repository_id: string
+  external_repository_id: string
+  name: string
+  repository_kind: string
+  is_selected: boolean
+  sync_mode: 'FULL' | 'INCREMENTAL'
+  last_synced_at: string | null
+}
+
+export interface IntegrationSyncJob {
+  sync_job_id: string
+  integration_id: string
+  sync_type: string
+  sync_status: string
+  files_discovered: number
+  files_processed: number
+  files_failed: number
+  versions_created: number
+  documents_deleted: number
+  attempt_count: number
+  started_at: string | null
+  completed_at: string | null
+  next_attempt_at: string | null
+  error_code: string | null
+  error_summary: string | null
+  created_at: string
+}
+
+export interface ExternalDocument {
+  external_document_id: string
+  internal_document_id: string
+  external_file_id: string
+  external_repository_id: string
+  external_version_id: string | null
+  source_url: string | null
+  source_path: string | null
+  content_checksum: string | null
+  file_size: number | null
+  sync_status: string
+  permission_state: string
+  last_modified_at: string | null
+  last_synced_at: string | null
+  deleted_at: string | null
+}
+
+export interface IntegrationIdentityMapping {
+  mapping_id: string
+  external_principal_id: string
+  external_principal_type: string
+  user_id: string | null
+  role_id: string | null
+  is_active: boolean
+  created_at: string
+}
+
+export interface DocumentVersion {
+  document_version_id: string
+  document_id: string
+  version_number: number
+  external_version_id: string | null
+  content_checksum: string
+  file_size: number
+  ingestion_status: string
+  is_current: boolean
+  source_modified_at: string | null
+  created_at: string
+}

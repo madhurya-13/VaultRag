@@ -26,6 +26,11 @@ const DocumentsPage = lazy(() =>
     default: module.DocumentsPage,
   })),
 )
+const IntegrationsPage = lazy(() =>
+  import('@/pages/integrations-page').then((module) => ({
+    default: module.IntegrationsPage,
+  })),
+)
 const GraphPage = lazy(() =>
   import('@/pages/graph-page').then((module) => ({
     default: module.GraphPage,
@@ -63,6 +68,12 @@ export default function App() {
             }
           >
             <Route path="admin/users" element={<UsersPage />} />
+          </Route>
+
+          <Route
+            element={<CapabilityRoute capability={CAP.MANAGE_INTEGRATIONS} />}
+          >
+            <Route path="admin/integrations" element={<IntegrationsPage />} />
           </Route>
 
           <Route

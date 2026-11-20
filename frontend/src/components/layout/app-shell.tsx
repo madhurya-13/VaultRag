@@ -7,6 +7,7 @@ import {
   Menu,
   Moon,
   Network,
+  Plug,
   ShieldAlert,
   Sparkles,
   Sun,
@@ -62,6 +63,12 @@ const adminNav: NavItem[] = [
     capability: CAP.MANAGE_USERS,
   },
   {
+    to: '/admin/integrations',
+    label: 'Integrations',
+    icon: Plug,
+    capability: CAP.MANAGE_INTEGRATIONS,
+  },
+  {
     to: '/security',
     label: 'Security',
     icon: ShieldAlert,
@@ -75,6 +82,7 @@ const routeLabels: Record<string, string> = {
   '/documents': 'Documents',
   '/graph': 'Knowledge graph',
   '/admin/users': 'Users & roles',
+  '/admin/integrations': 'Integrations',
   '/security': 'Security',
   '/forbidden': 'Access denied',
 }

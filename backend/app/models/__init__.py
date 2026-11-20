@@ -1,5 +1,16 @@
 """Import every model so SQLAlchemy's registry and Alembic see them all."""
 
+from app.integrations.models import (
+    DocumentVersion,
+    ExternalDocument,
+    Integration,
+    IntegrationCredential,
+    IntegrationIdentityMapping,
+    IntegrationOAuthState,
+    IntegrationRepository,
+    IntegrationSyncEvent,
+    IntegrationSyncJob,
+)
 from app.models.conversation import Conversation
 from app.models.conversation_message import ConversationMessage
 from app.models.document import Document
@@ -32,6 +43,8 @@ __all__ = [
     "DocumentChunk",
     "DocumentIngestionJob",
     "DocumentPermission",
+    "DocumentVersion",
+    "ExternalDocument",
     "EntityAlias",
     "KnowledgeConflict",
     "KnowledgeEdge",
@@ -39,6 +52,13 @@ __all__ = [
     "KnowledgeEntityMerge",
     "KnowledgeEntityReview",
     "KnowledgeExtractionJob",
+    "Integration",
+    "IntegrationCredential",
+    "IntegrationIdentityMapping",
+    "IntegrationOAuthState",
+    "IntegrationRepository",
+    "IntegrationSyncEvent",
+    "IntegrationSyncJob",
     "KnowledgeNode",
     "KnowledgeQueryAnalytics",
     "Organization",

@@ -6,6 +6,7 @@ export const CAP = {
   VIEW_CHUNKS: 'VIEW_CHUNKS',
   VIEW_AUDIT_LOGS: 'VIEW_AUDIT_LOGS',
   MANAGE_ATTRIBUTES: 'MANAGE_ATTRIBUTES',
+  MANAGE_INTEGRATIONS: 'MANAGE_INTEGRATIONS',
 } as const
 
 export type Capability = (typeof CAP)[keyof typeof CAP]
@@ -21,6 +22,7 @@ const ROLE_CAPABILITIES: Record<string, readonly Capability[]> = {
     CAP.VIEW_CHUNKS,
     CAP.VIEW_AUDIT_LOGS,
     CAP.MANAGE_ATTRIBUTES,
+    CAP.MANAGE_INTEGRATIONS,
   ],
   HR: [],
   FINANCE: [],
@@ -36,6 +38,7 @@ export const CAPABILITY_LABELS: Record<string, string> = {
   VIEW_CHUNKS: 'Inspect chunks',
   VIEW_AUDIT_LOGS: 'View audit logs',
   MANAGE_ATTRIBUTES: 'Manage attributes',
+  MANAGE_INTEGRATIONS: 'Manage integrations',
 }
 
 export const PERMISSION_LABELS: Record<string, string> = {

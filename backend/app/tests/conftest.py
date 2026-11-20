@@ -120,6 +120,11 @@ def _clean_tables(migration_engine):
         connection.execute(
             text(
                 "TRUNCATE TABLE "
+                "integration_oauth_states, integration_identity_mappings, "
+                "integration_sync_events, integration_sync_jobs, "
+                "document_versions, external_documents, "
+                "integration_repositories, integration_credentials, "
+                "integrations, "
                 "knowledge_query_analytics, knowledge_conflicts, "
                 "knowledge_entity_merges, knowledge_entity_reviews, "
                 "knowledge_extraction_jobs, knowledge_evidence, "

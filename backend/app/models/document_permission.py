@@ -71,6 +71,17 @@ class DocumentPermission(Base):
         Boolean, nullable=False, default=False, server_default=text("false")
     )
 
+    # Milestone 9: a grant materialized from an external ACL records the
+    # integration that owns it. Synchronization may revoke only rows whose
+    # managed_by_integration_id matches; manual grants are never touched.
+    managed_by_integration_id: Mapped[UUID | None] = mapped_column(nullable=True)
+    permission_origin: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="MANUAL",
+        server_default=text("'MANUAL'"),
+    )
+
     __table_args__ = (
         UniqueConstraint(
             "tenant_id",
@@ -101,9 +112,23 @@ class DocumentPermission(Base):
             name="fk_document_permissions_tenant_granted_by",
             ondelete="RESTRICT",
         ),
+        ForeignKeyConstraint(
+            ["tenant_id", "managed_by_integration_id"],
+            ["integrations.tenant_id", "integrations.integration_id"],
+            name="fk_document_permissions_tenant_integration",
+            ondelete="RESTRICT",
+        ),
         CheckConstraint(
             "num_nonnulls(role_id, user_id) = 1",
             name="ck_document_permissions_one_subject",
+        ),
+        CheckConstraint(
+            "permission_origin IN ('MANUAL', 'EXTERNAL')",
+            name="ck_document_permissions_origin",
+        ),
+        CheckConstraint(
+            "permission_origin <> 'EXTERNAL' OR managed_by_integration_id IS NOT NULL",
+            name="ck_document_permissions_external_owner",
         ),
         CheckConstraint(
             "permission_type IN ('READ', 'UPDATE', 'DELETE', 'MANAGE_PERMISSIONS')",
@@ -167,6 +192,12 @@ class DocumentPermission(Base):
             "ix_document_permissions_tenant_active",
             "tenant_id",
             "is_active",
+        ),
+        Index(
+            "ix_document_permissions_tenant_integration",
+            "tenant_id",
+            "managed_by_integration_id",
+            postgresql_where=text("managed_by_integration_id IS NOT NULL"),
         ),
     )
 

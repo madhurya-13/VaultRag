@@ -242,6 +242,45 @@ class Settings(BaseSettings):
     ollama_health_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
     ollama_model_cache_seconds: float = Field(default=30.0, ge=0, le=600)
 
+    # ------------------------------------------------------------------
+    # Milestone 9: enterprise integrations and synchronization
+    # ------------------------------------------------------------------
+    # Integrations can be left switched off on a deployment that does not use
+    # them; the routes then refuse with INTEGRATION_NOT_CONFIGURED.
+    integrations_enabled: bool = True
+    integration_token_encryption_key: SecretStr | None = Field(
+        default=None,
+        description=(
+            "Base64url-encoded 32-byte AES-256-GCM key protecting stored "
+            "provider credentials. Required before any provider is connected."
+        ),
+    )
+    # Exact public API origin used to build OAuth redirect URIs, e.g.
+    # https://vaultrag.example.com. Never derived from a request Host header.
+    integration_oauth_redirect_base: str | None = Field(
+        default=None,
+        description="Public API origin for provider OAuth redirect URIs.",
+    )
+    integration_oauth_state_ttl_seconds: int = Field(default=600, ge=60, le=3600)
+    integration_http_timeout_seconds: float = Field(default=20.0, gt=0, le=120)
+    integration_http_connect_timeout_seconds: float = Field(default=5.0, gt=0, le=30)
+    # Hard ceiling for any provider download, enforced by the connector while
+    # streaming rather than by trusting a Content-Length header.
+    integration_max_download_bytes: int = Field(
+        default=25 * 1024 * 1024, ge=1024, le=200 * 1024 * 1024
+    )
+    integration_webhook_max_body_bytes: int = Field(
+        default=64 * 1024, ge=1024, le=1024 * 1024
+    )
+    integration_sync_worker_poll_seconds: float = Field(default=5.0, gt=0, le=300)
+    integration_sync_max_attempts: int = Field(default=3, ge=1, le=10)
+    integration_sync_backoff_base_seconds: int = Field(default=30, ge=1, le=3600)
+    # A job left PROCESSING for longer than this is reclaimable by the worker.
+    integration_sync_job_stale_seconds: int = Field(default=1800, ge=60, le=86400)
+    integration_sync_default_interval_minutes: int = Field(
+        default=60, ge=1, le=10080
+    )
+
     @field_validator(
         "database_url",
         "test_database_url",
@@ -371,6 +410,47 @@ class Settings(BaseSettings):
             )
         if self.ollama_max_output_tokens < 1:
             raise ValueError("OLLAMA_MAX_OUTPUT_TOKENS must be positive.")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_integration_settings(self) -> "Settings":
+        # The key is validated when present and read lazily at connect time, so
+        # a deployment that does not use integrations still boots. A malformed
+        # key always fails startup rather than failing mid-OAuth.
+        configured = self.integration_token_encryption_key
+        if configured is not None:
+            raw = configured.get_secret_value().strip()
+            if raw:
+                import base64
+                import binascii
+
+                padded = raw.encode("ascii", "ignore") + b"=" * (-len(raw) % 4)
+                try:
+                    decoded = base64.urlsafe_b64decode(padded)
+                except (binascii.Error, ValueError) as exc:
+                    raise ValueError(
+                        "INTEGRATION_TOKEN_ENCRYPTION_KEY must be base64url-encoded."
+                    ) from exc
+                if len(decoded) != 32:
+                    raise ValueError(
+                        "INTEGRATION_TOKEN_ENCRYPTION_KEY must decode to exactly "
+                        "32 bytes (AES-256)."
+                    )
+
+        redirect_base = self.integration_oauth_redirect_base
+        if redirect_base is not None:
+            parsed = urlsplit(redirect_base)
+            if (
+                parsed.scheme not in {"http", "https"}
+                or not parsed.hostname
+                or parsed.path not in {"", "/"}
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise ValueError(
+                    "INTEGRATION_OAUTH_REDIRECT_BASE must be an http(s) origin "
+                    "without a path, query or fragment."
+                )
         return self
 
 

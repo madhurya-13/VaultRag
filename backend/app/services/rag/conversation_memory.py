@@ -239,6 +239,12 @@ def add_message(
         content=text,
         citations=list(citations or []),
         evidence_level=evidence_level,
+        # A question and its answer are written in one transaction, so the
+        # server-side ``now()`` default would give both rows the same
+        # timestamp. ``recent_messages`` then falls back to a random UUID
+        # tie-break and can return the answer before the question. Stamping the
+        # application clock keeps the order monotonic.
+        created_at=_now(),
     )
     db.add(message)
     conversation.updated_at = _now()

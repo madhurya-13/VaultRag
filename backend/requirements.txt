@@ -19,6 +19,8 @@ python-multipart==0.0.33
 # Security
 PyJWT==2.15.1
 argon2-cffi==23.1.0
+# AES-256-GCM envelope encryption for stored integration credentials.
+cryptography==50.0.1
 
 # Document ingestion / embeddings / local LLM HTTP client
 PyMuPDF==1.24.14

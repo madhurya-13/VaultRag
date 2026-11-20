@@ -1,6 +1,6 @@
 # VaultRAG - Permission-Aware Multi-Tenant RAG Platform
 
-> **Milestones 1-7: tenant-isolated authorization, ingestion, permission-aware RAG, full-stack interface, security evaluation, local container deployment, hybrid retrieval, query intelligence, conversation memory and retrieval analytics**
+> **Milestones 1-9: tenant-isolated authorization, ingestion, permission-aware RAG, full-stack interface, security evaluation, local container deployment, hybrid retrieval, query intelligence, conversation memory, retrieval analytics, the knowledge graph engine, enterprise source integrations and immutable document versions**
 
 VaultRAG is a multi-tenant platform where organizations share one application
 while users, roles, documents, chunks, embeddings, retrieval context, generated
@@ -36,6 +36,15 @@ retrieval analytics API, and an offline evaluation harness. See the
 [RAG evaluation report](docs/evaluation/RAG_EVALUATION_REPORT.md) and
 [retrieval analytics guide](docs/evaluation/RETRIEVAL_ANALYTICS.md). Scores in
 that report are measured on a synthetic corpus; it is not a production benchmark.
+
+Milestone 8 adds the evidence-gated knowledge graph. Milestone 9 adds
+enterprise integrations (Local directory, Google Drive, SharePoint), encrypted
+provider credentials, full and incremental synchronization into the existing
+permission-aware corpus, deny-by-default external ACL mirroring, immutable
+document versions with audited rollback, a per-tenant sync worker and an admin
+UI. See [docs/integrations/README.md](docs/integrations/README.md),
+[the security model](docs/integrations/INTEGRATION_SECURITY_MODEL.md) and
+[sync operations](docs/integrations/SYNC_OPERATIONS.md).
 
 **Primary security guarantee:** unauthorized document chunk text is never
 selected for context construction and is never sent to the language model.
@@ -127,7 +136,29 @@ Detailed threat model and design decisions: [docs/SECURITY.md](docs/SECURITY.md)
   levels (`strong`/`moderate`/`limited`/`insufficient`) that are not probabilities.
 - Evaluation and analytics: labeled synthetic dataset, deterministic benchmark,
   tenant-scoped `retrieval_analytics` table, and `GET /rag/analytics` behind the
-  existing audit-log capability.
+     existing audit-log capability.
+
+### Milestone 9 - enterprise integrations and document versions
+
+- Provider-neutral connector contract with declared capabilities; unsupported
+  operations fail loudly instead of returning empty data.
+- Local-directory reference connector, Google Drive and SharePoint / Microsoft
+  Graph connectors. Only text-based PDF is ingested; Google-native files are
+  exported as PDF.
+- AES-256-GCM encrypted provider credentials bound to tenant, integration and
+  provider with associated data. Secrets are never returned by the API.
+- Full and cursor-based incremental synchronization with a hard download cap,
+  locally computed SHA-256, content de-duplication and per-file failure
+  isolation.
+- Synchronized files become ordinary VaultRAG documents and re-use the existing
+  ingestion and authorization pipeline. Tenancy and RLS are enforced twice.
+- Deny-by-default external ACL mirroring: only explicit identity mappings
+  resolve, only READ is mirrored, and only `permission_origin = 'EXTERNAL'`
+  grants can be revoked by a sync.
+- Immutable `document_versions` with checksums, one current revision per
+  document, and an audited rollback that re-ingests the stored bytes.
+- Signed single-use OAuth state with PKCE, provider webhook verification, a
+  per-tenant worker and an ADMIN-only API and UI.
 
 ---
 
@@ -502,6 +533,22 @@ enabled.
 | `DELETE` | `/rag/conversations/{id}` | Bearer | Soft-delete a conversation |
 | `POST` | `/rag/conversations/{id}/clear` | Bearer | Clear conversation messages |
 | `GET` | `/rag/analytics` | ADMIN | Tenant-scoped retrieval analytics |
+| `GET` | `/integrations/providers` | ADMIN | Registered connectors |
+| `GET`/`POST` | `/integrations` | ADMIN | List and create connections |
+| `GET`/`PATCH`/`DELETE` | `/integrations/{id}` | ADMIN | Read, update or disconnect |
+| `POST` | `/integrations/{id}/credentials` | ADMIN | Store an encrypted credential |
+| `POST` | `/integrations/{id}/connect` | ADMIN | Validate the stored credential |
+| `POST` | `/integrations/{id}/oauth/start` | ADMIN | Begin OAuth |
+| `GET` | `/integrations/oauth/callback` | Public (signed state) | OAuth callback |
+| `GET` | `/integrations/{id}/repositories` | ADMIN | Discover/select containers |
+| `PUT` | `/integrations/{id}/repositories/{rid}` | ADMIN | Select and set sync mode |
+| `POST` | `/integrations/{id}/sync` | ADMIN | Run a synchronization |
+| `GET` | `/integrations/{id}/jobs` | ADMIN | Sync history |
+| `GET` | `/integrations/{id}/documents` | ADMIN | External provenance |
+| `GET`/`POST` | `/integrations/{id}/identities` | ADMIN | Identity mappings |
+| `POST` | `/integrations/webhooks/{id}` | Public (signed) | Provider notification |
+| `GET` | `/documents/{id}/versions` | READ | Version history |
+| `POST` | `/documents/{id}/versions/{vid}/restore` | ADMIN | Roll back a revision |
 | `GET` | `/security/audit-logs` | ADMIN | Tenant-scoped audit events |
 | `GET` | `/health` | Public | Basic health check |
 
