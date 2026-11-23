@@ -14,6 +14,8 @@ import {
   Send,
   ShieldCheck,
   Sparkles,
+  ThumbsDown,
+  ThumbsUp,
   Trash2,
 } from 'lucide-react'
 import {
@@ -50,6 +52,7 @@ import type {
   RagConflict,
   RagEvidenceLevel,
   RagFilters,
+  RagRetrievalExplanation,
   RagSearchMode,
   RagSource,
   RagSourceGroup,
@@ -69,6 +72,9 @@ interface ChatEntry {
   conflicts?: RagConflict[]
   insufficientEvidence?: boolean
   timings?: RagTimings
+  explanation?: RagRetrievalExplanation
+  feedbackEnabled?: boolean
+  messageId?: string
   createdAt: string
   status: 'pending' | 'complete' | 'error'
   error?: string
@@ -145,18 +151,90 @@ function entriesFromConversation(detail: ConversationDetail): ChatEntry[] {
     entry.answer = message.content
     entry.createdAt = message.created_at
     entry.evidenceLevel = message.evidence_level ?? undefined
+    entry.messageId = message.message_id
     entry.sources = message.citations.map((citation) => ({
       document_id: citation.document_id,
       document_name: citation.document_name ?? 'Document',
       chunk_id: citation.chunk_id,
       page_start: citation.page_start,
       page_end: citation.page_end,
+      document_version_id: citation.document_version_id,
+      version_number: citation.version_number,
+      citation_verified: citation.citation_verified,
     }))
     entry.sourceGroups = undefined
     entry.retrievedChunks = message.citations.length
   }
   return entries
 }
+
+function FeedbackControls({ messageId }: { messageId: string }) {
+  const [sentiment, setSentiment] = useState<'POSITIVE' | 'NEGATIVE'>('POSITIVE')
+  const [category, setCategory] = useState('OTHER')
+  const [comment, setComment] = useState('')
+  const [sending, setSending] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  const submit = async () => {
+    setSending(true)
+    try {
+      await api.post('/feedback', {
+        message_id: messageId,
+        sentiment,
+        category,
+        comment: comment.trim() || null,
+      })
+      setSaved(true)
+      toast.success('Feedback saved')
+    } catch (error) {
+      toast.error('Feedback could not be saved', {
+        description: getErrorMessage(error),
+      })
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return (
+    <details className="rounded-lg border border-border/60 bg-card/40 px-3 py-2 text-[11px]">
+      <summary className="flex cursor-pointer list-none items-center gap-2 text-muted-foreground">
+        <ThumbsUp className="size-3" aria-hidden="true" />
+        Rate this answer
+      </summary>
+      <div className="mt-2 grid gap-2 sm:grid-cols-[130px_170px_1fr_auto]">
+        <Select
+          value={sentiment}
+          onChange={(event) => setSentiment(event.target.value as 'POSITIVE' | 'NEGATIVE')}
+          aria-label="Feedback sentiment"
+        >
+          <option value="POSITIVE">Helpful</option>
+          <option value="NEGATIVE">Not helpful</option>
+        </Select>
+        <Select value={category} onChange={(event) => setCategory(event.target.value)} aria-label="Feedback category">
+          {['INCORRECT_ANSWER', 'MISSING_CITATION', 'WRONG_CITATION', 'INCOMPLETE_ANSWER', 'IRRELEVANT_SOURCES', 'MISSING_DOCUMENT', 'RETRIEVAL_PROBLEM', 'PERMISSION_PROBLEM', 'INGESTION_PROBLEM', 'OTHER'].map(
+            (item) => (
+              <option key={item} value={item}>
+                {titleCase(item.replace(/_/g, ' '))}
+              </option>
+            ),
+          )}
+        </Select>
+        <input
+          value={comment}
+          onChange={(event) => setComment(event.target.value)}
+          maxLength={2000}
+          placeholder="Optional comment (no document contents)"
+          className="h-9 rounded-md border border-border bg-background px-2 text-xs"
+        />
+        <Button size="sm" onClick={() => void submit()} disabled={sending || saved}>
+          {saved ? <CheckCircle2 aria-hidden="true" /> : <ThumbsDown aria-hidden="true" />}
+          {saved ? 'Saved' : 'Send'}
+        </Button>
+      </div>
+    </details>
+  )
+}
+
 
 export function ChatPage() {
   const { user } = useAuth()
@@ -275,6 +353,9 @@ export function ChatPage() {
                 conflicts: data.conflicts,
                 insufficientEvidence: data.insufficient_evidence,
                 timings: data.timings,
+                explanation: data.explanation ?? undefined,
+                feedbackEnabled: data.feedback_enabled ?? true,
+                messageId: data.message_id ?? undefined,
                 status: 'complete',
               }
             : item,
@@ -601,6 +682,29 @@ export function ChatPage() {
                                   No validated document citations were returned for this answer.
                                 </p>
                               )}
+
+                              {entry.explanation ? (
+                                <details className="rounded-lg border border-border/60 bg-card/40 px-3 py-2 text-[11px]">
+                                  <summary className="cursor-pointer list-none font-medium text-muted-foreground">
+                                    Why this answer
+                                  </summary>
+                                  <div className="mt-2 grid gap-1 text-muted-foreground sm:grid-cols-2">
+                                    <span>Mode: {titleCase(entry.explanation.mode.replace(/_/g, ' '))}</span>
+                                    <span>Reranked: {entry.explanation.reranked ? 'yes' : 'no'}</span>
+                                    <span>Semantic evidence: {entry.explanation.semantic_contribution ? 'yes' : 'no'}</span>
+                                    <span>Keyword evidence: {entry.explanation.keyword_contribution ? 'yes' : 'no'}</span>
+                                    <span>Graph evidence: {entry.explanation.graph_contribution ? 'yes' : 'no'}</span>
+                                    <span>Authorized candidates: {entry.explanation.authorized_candidates}</span>
+                                  </div>
+                                  <p className="mt-2 text-[11px] leading-5 text-foreground">
+                                    {entry.explanation.evidence_rationale}
+                                  </p>
+                                </details>
+                              ) : null}
+
+                              {entry.feedbackEnabled !== false && entry.messageId ? (
+                                <FeedbackControls messageId={entry.messageId} />
+                              ) : null}
                             </div>
                           )}
                         </div>

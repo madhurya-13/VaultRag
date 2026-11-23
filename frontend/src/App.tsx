@@ -26,6 +26,31 @@ const DocumentsPage = lazy(() =>
     default: module.DocumentsPage,
   })),
 )
+const EvaluationPage = lazy(() =>
+  import('@/pages/evaluation-page').then((module) => ({
+    default: module.EvaluationPage,
+  })),
+)
+const AnalyticsPage = lazy(() =>
+  import('@/pages/analytics-page').then((module) => ({
+    default: module.AnalyticsPage,
+  })),
+)
+const FeedbackPage = lazy(() =>
+  import('@/pages/feedback-page').then((module) => ({
+    default: module.FeedbackPage,
+  })),
+)
+const KnowledgeGapsPage = lazy(() =>
+  import('@/pages/knowledge-gaps-page').then((module) => ({
+    default: module.KnowledgeGapsPage,
+  })),
+)
+const SettingsPage = lazy(() =>
+  import('@/pages/settings-page').then((module) => ({
+    default: module.SettingsPage,
+  })),
+)
 const IntegrationsPage = lazy(() =>
   import('@/pages/integrations-page').then((module) => ({
     default: module.IntegrationsPage,
@@ -74,6 +99,36 @@ export default function App() {
             element={<CapabilityRoute capability={CAP.MANAGE_INTEGRATIONS} />}
           >
             <Route path="admin/integrations" element={<IntegrationsPage />} />
+          </Route>
+
+          <Route
+            element={<CapabilityRoute capability={CAP.MANAGE_EVALUATION} />}
+          >
+            <Route path="admin/evaluation" element={<EvaluationPage />} />
+          </Route>
+
+          <Route
+            element={<CapabilityRoute capability={CAP.VIEW_FEEDBACK} />}
+          >
+            <Route path="admin/feedback" element={<FeedbackPage />} />
+          </Route>
+
+          <Route
+            element={<CapabilityRoute capability={CAP.MANAGE_KNOWLEDGE_GAPS} />}
+          >
+            <Route path="admin/knowledge-gaps" element={<KnowledgeGapsPage />} />
+          </Route>
+
+          <Route
+            element={<CapabilityRoute capability={CAP.VIEW_ANALYTICS} />}
+          >
+            <Route path="admin/analytics" element={<AnalyticsPage />} />
+          </Route>
+
+          <Route
+            element={<CapabilityRoute capability={CAP.MANAGE_TENANT_SETTINGS} />}
+          >
+            <Route path="admin/settings" element={<SettingsPage />} />
           </Route>
 
           <Route

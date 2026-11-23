@@ -7,6 +7,11 @@ export const CAP = {
   VIEW_AUDIT_LOGS: 'VIEW_AUDIT_LOGS',
   MANAGE_ATTRIBUTES: 'MANAGE_ATTRIBUTES',
   MANAGE_INTEGRATIONS: 'MANAGE_INTEGRATIONS',
+  MANAGE_EVALUATION: 'MANAGE_EVALUATION',
+  VIEW_FEEDBACK: 'VIEW_FEEDBACK',
+  MANAGE_KNOWLEDGE_GAPS: 'MANAGE_KNOWLEDGE_GAPS',
+  VIEW_ANALYTICS: 'VIEW_ANALYTICS',
+  MANAGE_TENANT_SETTINGS: 'MANAGE_TENANT_SETTINGS',
 } as const
 
 export type Capability = (typeof CAP)[keyof typeof CAP]
@@ -23,6 +28,11 @@ const ROLE_CAPABILITIES: Record<string, readonly Capability[]> = {
     CAP.VIEW_AUDIT_LOGS,
     CAP.MANAGE_ATTRIBUTES,
     CAP.MANAGE_INTEGRATIONS,
+    CAP.MANAGE_EVALUATION,
+    CAP.VIEW_FEEDBACK,
+    CAP.MANAGE_KNOWLEDGE_GAPS,
+    CAP.VIEW_ANALYTICS,
+    CAP.MANAGE_TENANT_SETTINGS,
   ],
   HR: [],
   FINANCE: [],
@@ -39,6 +49,11 @@ export const CAPABILITY_LABELS: Record<string, string> = {
   VIEW_AUDIT_LOGS: 'View audit logs',
   MANAGE_ATTRIBUTES: 'Manage attributes',
   MANAGE_INTEGRATIONS: 'Manage integrations',
+  MANAGE_EVALUATION: 'Manage RAG evaluation',
+  VIEW_FEEDBACK: 'Review answer feedback',
+  MANAGE_KNOWLEDGE_GAPS: 'Manage knowledge gaps',
+  VIEW_ANALYTICS: 'View enterprise analytics',
+  MANAGE_TENANT_SETTINGS: 'Manage tenant settings',
 }
 
 export const PERMISSION_LABELS: Record<string, string> = {

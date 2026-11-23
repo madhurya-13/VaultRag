@@ -1,7 +1,12 @@
 import {
   Activity,
+  BarChart3,
   ChevronRight,
+  FlaskConical,
   Files,
+  Lightbulb,
+  MessageSquareWarning,
+  Settings2,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -23,6 +28,7 @@ import {
 } from 'react-router-dom'
 
 import { Logo } from '@/components/layout/logo'
+import { Onboarding } from '@/components/layout/onboarding'
 import { InlineLoader } from '@/components/common/states'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -69,6 +75,36 @@ const adminNav: NavItem[] = [
     capability: CAP.MANAGE_INTEGRATIONS,
   },
   {
+    to: '/admin/evaluation',
+    label: 'RAG evaluation',
+    icon: FlaskConical,
+    capability: CAP.MANAGE_EVALUATION,
+  },
+  {
+    to: '/admin/feedback',
+    label: 'Feedback',
+    icon: MessageSquareWarning,
+    capability: CAP.VIEW_FEEDBACK,
+  },
+  {
+    to: '/admin/knowledge-gaps',
+    label: 'Knowledge gaps',
+    icon: Lightbulb,
+    capability: CAP.MANAGE_KNOWLEDGE_GAPS,
+  },
+  {
+    to: '/admin/analytics',
+    label: 'Analytics',
+    icon: BarChart3,
+    capability: CAP.VIEW_ANALYTICS,
+  },
+  {
+    to: '/admin/settings',
+    label: 'Settings',
+    icon: Settings2,
+    capability: CAP.MANAGE_TENANT_SETTINGS,
+  },
+  {
     to: '/security',
     label: 'Security',
     icon: ShieldAlert,
@@ -83,6 +119,11 @@ const routeLabels: Record<string, string> = {
   '/graph': 'Knowledge graph',
   '/admin/users': 'Users & roles',
   '/admin/integrations': 'Integrations',
+  '/admin/evaluation': 'RAG evaluation',
+  '/admin/feedback': 'Feedback',
+  '/admin/knowledge-gaps': 'Knowledge gaps',
+  '/admin/analytics': 'Analytics',
+  '/admin/settings': 'Settings',
   '/security': 'Security',
   '/forbidden': 'Access denied',
 }
@@ -407,10 +448,16 @@ export function AppShell() {
 
   return (
     <div className="min-h-screen bg-background">
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:bg-card focus:px-3 focus:py-2 focus:text-sm focus:text-foreground"
+      >
+        Skip to content
+      </a>
       <Sidebar open={mobileOpen} onClose={() => setMobileOpen(false)} />
       <div className="lg:pl-72">
         <Topbar onOpenMenu={() => setMobileOpen(true)} />
-        <main className="mx-auto w-full max-w-[1500px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+        <main id="main-content" className="mx-auto w-full max-w-[1500px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
           <Suspense fallback={<InlineLoader label="Loading workspace…" />}>
             <Outlet />
           </Suspense>
@@ -421,6 +468,7 @@ export function AppShell() {
           ) : null}
         </main>
       </div>
+      <Onboarding />
     </div>
   )
 }

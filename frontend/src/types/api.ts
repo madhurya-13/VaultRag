@@ -193,6 +193,9 @@ export interface RagSource {
   page_start: number
   page_end: number
   excerpt?: string | null
+  document_version_id?: string | null
+  version_number?: number | null
+  citation_verified?: boolean
   similarity?: number | null
   rerank_score?: number | null
   matched_by?: string[]
@@ -224,6 +227,18 @@ export interface RagTimings {
   total_ms: number
 }
 
+export interface RagRetrievalExplanation {
+  mode: string
+  semantic_contribution: boolean
+  keyword_contribution: boolean
+  graph_contribution: boolean
+  reranked: boolean
+  filters: Record<string, string>
+  authorized_candidates: number
+  denied_candidates: number
+  evidence_rationale: string | null
+}
+
 export interface RagAskResponse {
   answer: string
   sources: RagSource[]
@@ -235,6 +250,8 @@ export interface RagAskResponse {
   conflicts?: RagConflict[]
   insufficient_evidence?: boolean
   timings?: RagTimings
+  explanation?: RagRetrievalExplanation | null
+  feedback_enabled?: boolean
   conversation_id?: string | null
   message_id?: string | null
 }
@@ -265,6 +282,9 @@ export interface ConversationCitation {
   page_start: number
   page_end: number
   document_name: string | null
+  document_version_id?: string | null
+  version_number?: number | null
+  citation_verified?: boolean
 }
 
 export interface ConversationMessage {
@@ -506,4 +526,238 @@ export interface DocumentVersion {
   is_current: boolean
   source_modified_at: string | null
   created_at: string
+}
+
+// ---------------------------------------------------------------------------
+// Milestone 10: RAG evaluation
+// ---------------------------------------------------------------------------
+
+export type EvaluationCategory =
+  | 'single_document'
+  | 'multi_document'
+  | 'comparison'
+  | 'numeric'
+  | 'temporal'
+  | 'conflicting'
+  | 'graph_relationship'
+  | 'insufficient_evidence'
+  | 'unanswerable'
+  | 'restricted_document'
+  | 'metadata_filter'
+  | 'document_version'
+  | 'permission_change'
+  | 'citation'
+
+export type EvaluationConfiguration =
+  | 'semantic'
+  | 'keyword'
+  | 'hybrid'
+  | 'hybrid_rerank'
+  | 'hybrid_graph'
+  | 'hybrid_graph_rerank'
+
+export interface EvaluationDataset {
+  dataset_id: string
+  name: string
+  version: number
+  description: string | null
+  source: string
+  query_count: number
+  created_by: string
+  created_at: string
+}
+
+export interface EvaluationCase {
+  case_id: string
+  case_key: string
+  category: EvaluationCategory
+  question: string
+  expected_answer: string | null
+  expected_answerable: boolean
+  allowed_document_names: string[]
+  gold_document_names: string[]
+  gold_chunks: Array<{ document_name: string; chunk_index: number }>
+  expected_citation_document_names: string[]
+  restricted_document_names: string[]
+  filters: Record<string, string>
+  notes: string | null
+}
+
+export interface EvaluationDatasetDetail extends EvaluationDataset {
+  cases: EvaluationCase[]
+}
+
+export interface EvaluationRun {
+  run_id: string
+  dataset_id: string
+  dataset_name: string | null
+  configuration: EvaluationConfiguration
+  top_k: number
+  answer_mode: 'retrieval' | 'generated'
+  judge_enabled: boolean
+  viewer_user_id: string | null
+  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED'
+  case_count: number
+  completed_cases: number
+  failed_cases: number
+  authorization_violations: number
+  metrics: Record<string, number | string | boolean | null>
+  error_code: string | null
+  started_at: string | null
+  completed_at: string | null
+  created_at: string
+}
+
+export interface EvaluationResult {
+  result_id: string
+  run_id: string
+  case_id: string
+  case_key: string
+  category: EvaluationCategory
+  question: string
+  expected_answer: string | null
+  expected_answerable: boolean
+  answer: string | null
+  retrieved_chunk_ids: string[]
+  retrieved_document_ids: string[]
+  citations: Array<{
+    domain_source_id: string
+    document_id: string
+    document_name: string
+    chunk_id: string
+    page_start: number
+    page_end: number
+  }>
+  metrics: Record<string, number | string | boolean | null>
+  passed: boolean
+  error_code: string | null
+  latency_ms: number
+  created_at: string
+}
+
+export interface EvaluationMetrics {
+  total_runs: number
+  completed_runs: number
+  failed_runs: number
+  total_cases: number
+  passed_cases: number
+  failed_cases: number
+  authorization_violations: number
+  average_latency_ms: number
+  by_configuration: Array<{
+    configuration: string
+    runs: number
+    recall_at_5: number
+    mrr: number
+    ndcg_at_5: number
+    citation_validity: number
+    average_latency_ms: number
+  }>
+  recent_runs: EvaluationRun[]
+}
+
+export interface EvaluationConfigurationInfo {
+  configuration: EvaluationConfiguration
+  search_mode: string
+  rerank: boolean
+  graph: boolean
+  description: string
+}
+
+// Milestone 10 phases 3-7: feedback, gaps, settings
+export interface AnswerFeedback {
+  feedback_id: string
+  message_id: string
+  conversation_id: string
+  category: string
+  sentiment: string
+  comment: string | null
+  review_status: string
+  review_notes: string | null
+  reviewer_id: string | null
+  reviewed_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface AnswerFeedbackDetail extends AnswerFeedback {
+  question: string | null
+  answer: string | null
+  citations: Array<{
+    document_id: string
+    document_name: string
+    page_start: number
+    page_end: number
+    authorized: boolean
+  }>
+  hidden_citations: number
+}
+
+export interface FeedbackSummary {
+  days: number
+  total: number
+  positive: number
+  negative: number
+  positive_rate: number
+  unreviewed: number
+  by_category: Array<{ category: string; count: number }>
+  by_status: Array<{ status: string; count: number }>
+  daily: Array<{ date: string; count: number }>
+}
+
+export interface KnowledgeGap {
+  gap_id: string
+  question: string
+  topic_key: string
+  classification: string
+  severity: string
+  status: string
+  occurrence_count: number
+  first_seen_at: string
+  last_seen_at: string
+  assigned_to: string | null
+  resolution_notes: string | null
+  resolution_document_id: string | null
+  resolution_verified: boolean | null
+  resolved_at: string | null
+}
+
+export interface KnowledgeGapDetail extends KnowledgeGap {
+  events: Array<{
+    event_id: string
+    action: string
+    actor_id: string | null
+    from_status: string | null
+    to_status: string | null
+    detail: string | null
+    created_at: string
+  }>
+}
+
+export interface GapSummary {
+  days: number
+  total_queries: number
+  total_signals: number
+  visible_gaps: number
+  unresolved_gaps: number
+  by_classification: Array<{ classification: string; count: number }>
+  by_status: Array<{ status: string; count: number }>
+  minimum_group_size: number
+  retention_days: number
+}
+
+export interface TenantSettings {
+  settings: Record<string, unknown>
+  version: number
+}
+
+export interface AnalyticsOverview {
+  days: number
+  documents: number
+  documents_completed: number
+  queries: number
+  feedback: number
+  knowledge_gaps: number
+  evaluation_runs: number
+  connected_integrations: number
 }
