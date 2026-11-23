@@ -9,7 +9,7 @@ RUN chown -R node:node /src
 USER node
 RUN npm run build
 
-FROM nginxinc/nginx-unprivileged:1.30-alpine
+FROM nginxinc/nginx-unprivileged:1.31-alpine
 USER root
 RUN apk upgrade --no-cache
 COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
