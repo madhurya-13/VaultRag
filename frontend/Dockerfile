@@ -5,6 +5,8 @@ RUN npm ci
 COPY frontend/ ./
 ARG VITE_API_BASE_URL=/api
 ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
+RUN chown -R node:node /src
+USER node
 RUN npm run build
 
 FROM nginxinc/nginx-unprivileged:1.30-alpine
