@@ -23,9 +23,9 @@ Milestone 6 adds a named PostgreSQL security regression suite, JWT issuer and
 audience verification, production host/CORS checks, safe model-output rendering
 coverage, Nginx rate limits, full local Compose services, CI security scans,
 Locust load scenarios, a synthetic tenant-isolation demo, and deployment and
-threat-model documentation. Start with the [deployment guide](docs/deployment/DEPLOYMENT_GUIDE.md),
-[security test report](docs/security/SECURITY_TEST_REPORT.md), and
-[demo script](docs/demo/DEMO_SCRIPT.md). No cloud resources are deployed by this repository.
+threat-model documentation. Start with the [deployment guide](docs/DEPLOYMENT.md),
+[security model](docs/SECURITY.md), [demo guide](docs/DEMO-GUIDE.md) and
+[portfolio summary](docs/PORTFOLIO.md). No cloud resources are deployed by this repository.
 
 Milestone 7 adds hybrid semantic + PostgreSQL full-text retrieval with reciprocal
 rank fusion, deterministic query understanding/rewriting/expansion/decomposition,
@@ -45,6 +45,16 @@ document versions with audited rollback, a per-tenant sync worker and an admin
 UI. See [docs/integrations/README.md](docs/integrations/README.md),
 [the security model](docs/integrations/INTEGRATION_SECURITY_MODEL.md) and
 [sync operations](docs/integrations/SYNC_OPERATIONS.md).
+
+Milestone 10 adds a first-class RAG evaluation framework, answer feedback with
+an administrator review workflow, privacy-preserving knowledge-gap analysis,
+evidence explainability (versions, verification and retrieval rationale),
+unified enterprise analytics, validated tenant settings, role-aware onboarding
+and operational hardening (live/ready probes, request-duration logs, workers and
+backup scripts). Evaluation uses a bundled labeled synthetic corpus and the real
+permission-aware pipeline. See
+[docs/evaluation/EVALUATION_FRAMEWORK.md](docs/evaluation/EVALUATION_FRAMEWORK.md)
+and [docs/milestone-10/PHASES-3-12-REPORT.md](docs/milestone-10/PHASES-3-12-REPORT.md).
 
 **Primary security guarantee:** unauthorized document chunk text is never
 selected for context construction and is never sent to the language model.
@@ -159,6 +169,52 @@ Detailed threat model and design decisions: [docs/SECURITY.md](docs/SECURITY.md)
   document, and an audited rollback that re-ingests the stored bytes.
 - Signed single-use OAuth state with PKCE, provider webhook verification, a
   per-tenant worker and an ADMIN-only API and UI.
+
+### Milestone 10 (Phase 2) - RAG evaluation and benchmarking
+
+- A versioned evaluation dataset model with cases that reference documents by
+  name and chunks by `(document_name, chunk_index)`, so labels survive
+  re-ingestion and chunk-id churn.
+- Bundled `synthetic_enterprise_v1` corpus: eight fictional documents and 15
+  labeled cases spanning 14 categories, including unanswerable, restricted,
+  conflicting, temporal, graph-relationship and permission-change cases.
+- Real metrics computed from persisted results: Recall/Precision/MRR/NDCG at
+  K=3/5/10 and document-level recall, plus answerability, citation validity and
+  coverage, token-F1, faithfulness/relevance proxies and a latency summary.
+- Six configurations (semantic, keyword, hybrid, hybrid+rerank, hybrid+graph,
+  hybrid+graph+rerank). If cross-encoder reranking is disabled, the rerank
+  configurations use a deterministic lexical proxy that is labeled as such in
+  the run metrics.
+- Runs execute the real `answer_question` pipeline with a real authorization
+  context, optionally impersonating a selected same-tenant viewer, and record
+  authorization violations as a hard quality metric.
+- ADMIN-only, tenant-scoped API and a dashboard with run history, configuration
+  comparison, per-case failures and dataset inspection.
+
+### Milestone 10 (Phases 3-12) - product intelligence and operations
+
+- Answer feedback on an owned assistant message (sentiment, category, optional
+  comment), duplicate-safe upsert, edit and retract, append-only audit events,
+  and an ADMIN review queue that re-authorizes citations for the reviewer.
+- Knowledge-gap signals grouped into tenant-scoped topic clusters. Permission
+  denials are excluded from content-gap counts; questions are redacted before
+  storage; clusters surface only after a minimum occurrence count; resolution
+  re-runs the real RAG pipeline and records whether evidence improved.
+- Explainable RAG responses: document version and current-version number per
+  source, citation verification status, retrieval mode, semantic/keyword/graph
+  contributions, rerank usage, filters and bounded evidence rationale. No
+  prompts or chain-of-thought are exposed.
+- Unified analytics API and dashboard for overview, usage, documents, retrieval,
+  integrations, feedback, gaps and security. Document analytics are aggregate-
+  only, so they cannot reveal an unauthorized title.
+- Versioned tenant settings for safe retrieval defaults, bounds and feature
+  toggles, with server-side validation, history and rollback. Authorization,
+  RLS, permissions and citation validation are not configurable.
+- Role-aware, dismissible onboarding; skip link; accessible chart alternatives
+  and new empty/error states.
+- `/health/live` and `/health/ready`, content-free request-duration logs,
+  Compose worker definitions, Alembic drift checks in CI and PowerShell/Bash
+  backup scripts.
 
 ---
 
@@ -549,6 +605,34 @@ enabled.
 | `POST` | `/integrations/webhooks/{id}` | Public (signed) | Provider notification |
 | `GET` | `/documents/{id}/versions` | READ | Version history |
 | `POST` | `/documents/{id}/versions/{vid}/restore` | ADMIN | Roll back a revision |
+| `GET` | `/evaluation/datasets` | ADMIN (`MANAGE_EVALUATION`) | List evaluation datasets |
+| `GET` | `/evaluation/datasets/{id}` | ADMIN | Dataset with cases |
+| `POST` | `/evaluation/datasets` | ADMIN | Import a JSON evaluation dataset |
+| `POST` | `/evaluation/datasets/synthetic` | ADMIN | Import bundled synthetic corpus |
+| `GET` | `/evaluation/configurations` | ADMIN | Available retrieval configurations |
+| `GET`/`POST` | `/evaluation/runs` | ADMIN | List and execute evaluation runs |
+| `GET` | `/evaluation/runs/{id}` | ADMIN | Run with aggregate metrics |
+| `GET` | `/evaluation/runs/{id}/results` | ADMIN | Per-case results and failures |
+| `GET` | `/evaluation/metrics` | ADMIN | Tenant evaluation dashboard aggregates |
+| `POST` | `/feedback` | Bearer | Submit or update feedback on an owned answer |
+| `GET` | `/feedback/mine` | Bearer | Caller's active feedback |
+| `PATCH`/`DELETE` | `/feedback/{id}` | Owner | Edit or retract feedback |
+| `GET` | `/admin/feedback` | ADMIN (`VIEW_FEEDBACK`) | Review queue and filters |
+| `GET` | `/admin/feedback/summary` | ADMIN | Sentiment/category/status aggregates |
+| `GET` | `/admin/feedback/{id}` | ADMIN | Question, answer and reviewer-authorized citations |
+| `POST` | `/admin/feedback/{id}/review` | ADMIN | Status, category and internal notes |
+| `GET` | `/admin/knowledge-gaps` | ADMIN (`MANAGE_KNOWLEDGE_GAPS`) | Visible gap clusters |
+| `GET` | `/admin/knowledge-gaps/summary` | ADMIN | Gap aggregates and privacy thresholds |
+| `GET` | `/admin/knowledge-gaps/{id}` | ADMIN | Gap detail and lifecycle events |
+| `POST` | `/admin/knowledge-gaps/{id}/assign` | ADMIN | Assign a tenant user |
+| `POST` | `/admin/knowledge-gaps/{id}/status` | ADMIN | Acknowledge, resolve or dismiss |
+| `POST` | `/admin/knowledge-gaps/{id}/re-evaluate` | ADMIN | Re-run the normalized question through RAG |
+| `GET` | `/analytics/{section}` | ADMIN (`VIEW_ANALYTICS`) | overview, usage, documents, retrieval, integrations, feedback, knowledge-gaps, security |
+| `GET`/`PUT` | `/admin/settings` | ADMIN (`MANAGE_TENANT_SETTINGS`) | Read or update validated settings |
+| `GET` | `/admin/settings/history` | ADMIN | Version history |
+| `POST` | `/admin/settings/rollback` | ADMIN | Restore a prior version as a new version |
+| `GET` | `/health/live` | Public | Process liveness |
+| `GET` | `/health/ready` | Public | Database, pgvector and full-text readiness |
 | `GET` | `/security/audit-logs` | ADMIN | Tenant-scoped audit events |
 | `GET` | `/health` | Public | Basic health check |
 
@@ -1228,3 +1312,9 @@ docs/
 Never commit `backend/.env`, generated secrets, private documents or production
 database credentials. This is an educational project following production
 patterns, but it has not been independently security-audited.
+
+## License
+
+No open-source license has been selected for this repository. Unless the owner
+adds a license file, the code and documentation remain all rights reserved; do
+not redistribute them.

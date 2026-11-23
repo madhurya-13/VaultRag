@@ -38,6 +38,21 @@ Schedule encrypted `pg_dump` backups of the application database and separate co
 
 - Docker pipe unavailable: start Docker Desktop Linux engine, then retry `docker info` and `docker compose config`.
 - API does not become healthy: inspect `docker compose logs migrate api db`; verify `.env` and PostgreSQL bootstrap output.
+
+## Milestone 10 operations
+
+- Probes: `/health/live` proves the process is serving; `/health/ready` checks
+  the database, pgvector and the full-text column. Use readiness for load
+  balancer routing and liveness only for restart decisions.
+- Optional workers: `docker compose --profile workers up -d` starts
+  `graph-worker` and `integration-worker` with restart policies and no host
+  ports. They are outbound-only and mount the private document volume.
+- Backup: `powershell -ExecutionPolicy Bypass -File scripts/backup.ps1` or
+  `./scripts/backup.sh`. Both dump PostgreSQL in custom format, verify it with
+  `pg_restore --list`, and archive the document volume. Output is ignored by
+  Git. Restore into an isolated database and verify migrations and sample file
+  hashes before any production restore; the scripts do not restore automatically.
+- CI runs `alembic upgrade head`, `alembic check` and `docker compose config`.
 - Ollama responds but RAG returns unavailable: `docker compose exec ollama ollama list`, then pull the configured model and check API logs.
 - Browser API error: verify frontend `/api` proxy and `PUBLIC_ORIGIN`; inspect `docker compose logs web api`.
 - DB role/password mismatch after an initialized volume: reset the role with superuser administration. Do not remove a volume containing needed data.

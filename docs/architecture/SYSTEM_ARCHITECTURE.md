@@ -16,6 +16,59 @@ flowchart LR
   Q --> U
 ```
 
+## Milestone 10 flows
+
+### Permission-aware answer and explainability
+
+```mermaid
+flowchart LR
+  U[Authenticated user] --> R[/rag/ask/]
+  R --> S[Tenant settings resolver]
+  S --> Q[Query understanding]
+  Q --> H[Hybrid retrieval + optional graph]
+  H --> A[Document authorization filter]
+  A -->|authorized chunks only| RR[Rerank / evidence builder]
+  RR --> L[LLM generation]
+  L --> C[Citation verification]
+  C --> V[Version metadata lookup]
+  V --> P[Response + bounded explanation]
+  P --> M[(Conversation citations)]
+  A -->|denied| X[No evidence, insufficient answer]
+```
+
+### Feedback and knowledge gaps
+
+```mermaid
+flowchart TD
+  M[Owned assistant message] --> F[Feedback upsert / retract]
+  F --> AU[(Audit events)]
+  F --> AR[Admin review: re-authorized citations]
+  Q[RAG insufficient evidence] --> D{Permission denial?}
+  D -->|yes| SK[Excluded from gaps]
+  D -->|no| N[Normalize + redact question]
+  N --> SG[(Fingerprint signal, no user ID)]
+  SG --> G[Aggregate at >= 3]
+  G --> W[Assign / status / re-evaluate]
+  W --> RAG[Real RAG pipeline re-run]
+```
+
+### Evaluation, analytics and configuration
+
+```mermaid
+flowchart LR
+  DS[(Synthetic dataset)] --> EV[Evaluation runner]
+  PIPE[Real permission-aware pipeline] --> EV
+  EV --> RES[(Metrics + case results)]
+  RES --> DASH[Comparison dashboard]
+  T[(Tenant tables)] --> AN[Analytics aggregates]
+  AN --> ADASH[Analytics dashboard]
+  TS[(Versioned tenant settings)] --> PIPE
+  TS --> HIST[(Append-only history)]
+```
+
+All arrows crossing a tenant or document boundary carry the server-derived
+tenant and authorization decision; the frontend is never the enforcement point.
+
 ## Trust boundaries
 
 - Browser input, uploaded PDFs, retrieved text, user questions and model output are untrusted.

@@ -71,3 +71,25 @@ Run the regression suite while observing the test's recording LLM: the Finance m
 - Test output for cross-tenant context and immediate-revocation regressions.
 
 All content and identities must remain synthetic.
+
+## Milestone 10 demo path (approx. 10 minutes)
+
+1. Seed two tenants with `python backend/scripts/seed_demo.py --api <url>`
+   (requires a running API and embedding/LLM services), or provision equivalent
+   data manually. Sign in as the Acme administrator.
+2. Open **Analytics** and show usage, retrieval quality and the aggregate-only
+   document view.
+3. Open **Feedback**, filter to negative feedback, open a review and point out
+   that citations are resolved for the signing-in reviewer only.
+4. Open **Knowledge gaps**. Explain that permission denials are excluded, the
+   question is redacted, and the cluster appears only after three occurrences.
+   Re-evaluate a gap and show the real-pipeline result.
+5. Open **Settings**, change a retrieval default, save, then show history and
+   roll back. Note that authorization and citation validation cannot be changed.
+6. As the employee, ask a question: expand **Why this answer** for version and
+   verification metadata, then submit feedback on the answer.
+7. Show `/health/live` and `/health/ready`, and run the backup script if the
+   audience is technical.
+
+Do not claim Playwright, backup restore or model-integration tests passed unless
+they were actually run in that environment; refer to the validation report.

@@ -495,7 +495,8 @@ policies, not mocks.
 
 ## 15. Known limitations
 
-- No frontend, conversation persistence, streaming or background worker yet.
+- Background workers run as separate Compose services but are not autoscaled;
+  streaming responses and distributed rate limiting are not implemented.
 - Citation validation proves source-id validity, not factual correctness of every generated sentence.
 - The HNSW index is global, not tenant-partitioned; multi-tenant recall and latency need production-corpus tuning.
 - No refresh-token rotation, token revocation list or MFA. Local Nginx applies
@@ -510,3 +511,28 @@ policies, not mocks.
   authorization remains an application responsibility, backed by constraints.
 - This project follows production patterns but has not been independently
   security-audited.
+
+---
+
+## 16. Milestone 10 privacy controls
+
+- Feedback stores the user's own message reference, sentiment, category and an
+  optional comment. It stores no chunk text. Reviewer detail resolves citations
+  for the reviewer at read time; an unauthorized source is omitted.
+- Knowledge-gap signals exclude permission-denied answers. Questions are
+  normalized (lowercase, collapsed whitespace) and redacted (emails, UUIDs and
+  long numbers) before storage; only a SHA-256 fingerprint and topic keywords
+  remain. Signals have no user reference. Clusters stay hidden below the
+  configured minimum group size (3).
+- Analytics are aggregate-only. Document analytics intentionally omit titles and
+  content; security analytics expose action labels rather than raw payloads.
+- Explainability exposes version metadata, verification status, mode and
+  bounded candidate counts. It never exposes prompts, model reasoning, hidden
+  chunks or unauthorized source titles.
+- Tenant settings cannot weaken authentication, authorization, RLS, citation
+  validation or server maxima; they only narrow retrieval defaults.
+- New tables have RLS enabled and forced, `tenant_isolation`, tenant-safe
+  composite foreign keys and explicit least-privilege grants. Feedback and gap
+  deletion is soft; settings history is append-only.
+- Request logs are content-free (method, path, status, duration, request ID);
+  query strings and bodies are not logged.
