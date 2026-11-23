@@ -12,9 +12,7 @@ from app.tests.helpers import (
     create_document,
     get_user_attributes,
     grant_document_permission,
-    login,
     read_document,
-    set_user_attributes,
     tenant_user_with_attributes,
     use_tenant,
 )

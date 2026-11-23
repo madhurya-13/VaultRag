@@ -4,7 +4,6 @@ These tests use the real runtime role and the real policies. They are the
 database-level counterpart to the application-level isolation tests.
 """
 
-from uuid import UUID
 
 import pytest
 from sqlalchemy import create_engine, text

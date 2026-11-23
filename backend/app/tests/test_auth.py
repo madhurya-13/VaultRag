@@ -15,7 +15,6 @@ from app.tests.helpers import (
     PASSWORD,
     auth_headers,
     create_admin_bundle,
-    login,
     public_register,
     register_organization,
     use_tenant,

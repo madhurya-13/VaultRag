@@ -17,7 +17,6 @@ from app.tests.helpers import (
     create_admin_bundle,
     create_document,
     get_audit_logs,
-    grant_document_permission,
     login,
     public_register,
     read_document,

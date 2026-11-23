@@ -13,7 +13,6 @@ from app.services.chunk_metadata import (
 )
 from app.tests.helpers import (
     admin_bundle_with_attributes,
-    create_admin_bundle,
     grant_document_permission,
     make_pdf_bytes,
     revoke_document_permission,

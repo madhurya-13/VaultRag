@@ -9,7 +9,6 @@ from sqlalchemy.exc import DBAPIError
 
 from app.models import SecurityAuditLog
 from app.tests.helpers import (
-    access_check,
     admin_bundle_with_attributes,
     admin_create_user,
     auth_headers,
