@@ -8,6 +8,7 @@ Interactive docs: http://127.0.0.1:8000/docs
 
 import json
 import logging
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
@@ -23,15 +24,20 @@ from app.core.config import get_settings
 from app.core.database import engine, get_db
 from app.core.exceptions import AppError
 from app.routes import (
+    analytics,
     attributes,
     auth,
     documents,
+    evaluation,
+    feedback,
     integrations,
+    knowledge_gaps,
     knowledge_graph,
     organizations,
     rag,
     roles,
     security,
+    tenant_settings,
     users,
 )
 
@@ -76,8 +82,8 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="VaultRAG API",
-    version="5.0.0",
-    summary="Permission-aware multi-tenant RAG platform - Milestone 5",
+    version="1.0.0",
+    summary="Permission-aware multi-tenant RAG platform - Milestone 10",
     description=(
         "Secure RAG backend: tenants, users, tenant-scoped roles, JWT "
         "authentication, centralized RBAC/ABAC document authorization, "
@@ -157,9 +163,18 @@ async def request_context(request: Request, call_next):
 
     request.state.request_id = request_id
     request.state.client_ip = request.client.host if request.client else None
+    request.state.started_at = time.monotonic()
 
     response = await call_next(request)
     response.headers["X-Request-ID"] = str(request_id)
+    logger.info(
+        "request method=%s path=%s status=%d duration_ms=%d request_id=%s",
+        request.method,
+        request.url.path,
+        response.status_code,
+        int((time.monotonic() - request.state.started_at) * 1000),
+        request_id,
+    )
     return response
 
 
@@ -178,6 +193,52 @@ def health(db: Session = Depends(get_db)) -> dict[str, str]:
     return {"status": "ok", "database": "reachable"}
 
 
+@app.get("/health/live", tags=["Health"], summary="Process liveness")
+def health_live() -> dict[str, str]:
+    """Process-only liveness. Never touches the database or external services."""
+    return {"status": "ok", "probe": "live"}
+
+
+@app.get("/health/ready", tags=["Health"], summary="Dependency readiness")
+def health_ready(db: Session = Depends(get_db)) -> JSONResponse:
+    """Readiness without secrets or content."""
+    components: dict[str, str] = {}
+    ready = True
+    try:
+        db.execute(text("SELECT 1"))
+        components["database"] = "ready"
+    except Exception:
+        components["database"] = "unavailable"
+        ready = False
+    try:
+        vector = db.execute(
+            text("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
+        ).scalar_one_or_none()
+        components["pgvector"] = "ready" if vector else "unavailable"
+        ready = ready and bool(vector)
+    except Exception:
+        components["pgvector"] = "unavailable"
+        ready = False
+    try:
+        tsv = db.execute(
+            text(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = 'document_chunks' AND column_name = 'content_tsv'"
+            )
+        ).scalar_one_or_none()
+        components["full_text_search"] = "ready" if tsv else "unavailable"
+        ready = ready and bool(tsv)
+    except Exception:
+        components["full_text_search"] = "unavailable"
+        ready = False
+    components["embedding_model"] = settings.embedding_model_name
+    components["ollama"] = "optional"
+    return JSONResponse(
+        status_code=200 if ready else 503,
+        content={"status": "ready" if ready else "degraded", "components": components},
+    )
+
+
 app.include_router(auth.router)
 app.include_router(organizations.router)
 app.include_router(users.router)
@@ -188,5 +249,11 @@ app.include_router(integrations.oauth_router)
 app.include_router(integrations.router)
 app.include_router(integrations.versions_router)
 app.include_router(knowledge_graph.router)
+app.include_router(evaluation.router)
+app.include_router(feedback.router)
+app.include_router(feedback.admin_router)
+app.include_router(knowledge_gaps.router)
+app.include_router(tenant_settings.router)
+app.include_router(analytics.router)
 app.include_router(rag.router)
 app.include_router(security.router)

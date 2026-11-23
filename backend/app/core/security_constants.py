@@ -29,6 +29,11 @@ CAP_VIEW_AUDIT_LOGS: Final = "VIEW_AUDIT_LOGS"
 CAP_MANAGE_ATTRIBUTES: Final = "MANAGE_ATTRIBUTES"
 CAP_MANAGE_KNOWLEDGE_GRAPH: Final = "MANAGE_KNOWLEDGE_GRAPH"
 CAP_MANAGE_INTEGRATIONS: Final = "MANAGE_INTEGRATIONS"
+CAP_MANAGE_EVALUATION: Final = "MANAGE_EVALUATION"
+CAP_VIEW_FEEDBACK: Final = "VIEW_FEEDBACK"
+CAP_MANAGE_KNOWLEDGE_GAPS: Final = "MANAGE_KNOWLEDGE_GAPS"
+CAP_VIEW_ANALYTICS: Final = "VIEW_ANALYTICS"
+CAP_MANAGE_TENANT_SETTINGS: Final = "MANAGE_TENANT_SETTINGS"
 
 # Non-document capabilities. Document access for non-admin roles is always
 # driven by document_permissions rows, never by an implicit role capability.
@@ -44,6 +49,11 @@ ROLE_CAPABILITIES: Final[dict[str, frozenset[str]]] = {
             CAP_MANAGE_ATTRIBUTES,
             CAP_MANAGE_KNOWLEDGE_GRAPH,
             CAP_MANAGE_INTEGRATIONS,
+            CAP_MANAGE_EVALUATION,
+            CAP_VIEW_FEEDBACK,
+            CAP_MANAGE_KNOWLEDGE_GAPS,
+            CAP_VIEW_ANALYTICS,
+            CAP_MANAGE_TENANT_SETTINGS,
         }
     ),
     ROLE_HR: frozenset(),

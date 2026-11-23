@@ -1,0 +1,276 @@
+{
+  "name": "synthetic-enterprise-v1",
+  "version": 1,
+  "description": "Synthetic enterprise corpus for VaultRAG retrieval and answer evaluation. All organizations, people, identifiers and policies are fictional.",
+  "documents": [
+    {
+      "name": "Acme Employee Handbook",
+      "department": "HR",
+      "classification": "INTERNAL",
+      "text": "Acme Employee Handbook. Synthetic policy document. Every permanent employee receives 18 days of annual leave each year. Leave requests must be submitted at least five working days before the first day of absence. Employees may work remotely for up to three days per week with manager approval. The standard working week is 37.5 hours. Parental leave is 26 weeks at full pay. The handbook owner is the People Operations team."
+    },
+    {
+      "name": "Acme Expense Policy",
+      "department": "FINANCE",
+      "classification": "INTERNAL",
+      "text": "Acme Expense Policy. Synthetic finance document. Approved travel expenses require an itemized receipt and manager approval. Meals are capped at 40 demo credits per person per day. Economy class is required for flights shorter than six hours. Expense reports must be submitted within 30 days of the purchase date. Reimbursement is processed on the next monthly payroll cycle. Corporate card statements are reconciled by the Finance Operations team."
+    },
+    {
+      "name": "Acme Security Standard",
+      "department": "ENGINEERING",
+      "classification": "CONFIDENTIAL",
+      "text": "Acme Security Standard. Synthetic security document. Suspected security incidents must be reported to the Security Operations Center within one hour of discovery. Passwords must contain at least 14 characters and are rotated every 180 days. Production access requires hardware multi-factor authentication. Customer data may only be stored in the approved encrypted repository. Security exceptions expire after 90 days unless renewed by the Chief Information Security Officer."
+    },
+    {
+      "name": "Acme Incident Report 2026",
+      "department": "ENGINEERING",
+      "classification": "INTERNAL",
+      "text": "Acme Incident Report INC-2026-14. Synthetic incident record. The incident was detected on 3 February 2026 at 09:12 and resolved on 3 February 2026 at 11:40. Root cause: an expired TLS certificate on the internal document gateway. Impact: 42 minutes of degraded search availability for the engineering department. Remediation: certificate expiry alerts now fire 30 days before expiration and the certificate inventory is reviewed monthly. No customer documents were exposed."
+    },
+    {
+      "name": "Acme Remote Work Addendum",
+      "department": "HR",
+      "classification": "INTERNAL",
+      "text": "Acme Remote Work Addendum. Synthetic HR document. Employees may work remotely for up to three days per week. Fully remote arrangements require director approval and are reviewed every six months. Remote employees must attend the quarterly on-site planning day. Equipment stipends are 500 demo credits per year. Working from outside the country requires prior tax and legal review."
+    },
+    {
+      "name": "Acme Legacy Leave Policy",
+      "department": "HR",
+      "classification": "INTERNAL",
+      "text": "Acme Legacy Leave Policy. Superseded synthetic policy retained for comparison. Under the legacy policy every permanent employee received 15 days of annual leave each year. The legacy policy was replaced by the Acme Employee Handbook in January 2026. Documents that cite the legacy figure are out of date."
+    },
+    {
+      "name": "Acme Vendor Agreement",
+      "department": "FINANCE",
+      "classification": "CONFIDENTIAL",
+      "text": "Acme Vendor Agreement with Northwind Analytics. Synthetic contract summary. The agreement starts on 1 March 2026 and ends on 28 February 2027. Annual subscription cost is 12000 demo credits. Either party may terminate with 60 days written notice. The vendor may process synthetic usage data only in the approved region. A security review is required before renewal. Late renewal notice triggers a 10 percent surcharge."
+    },
+    {
+      "name": "Acme Salary Bands",
+      "department": "HR",
+      "classification": "RESTRICTED",
+      "text": "Acme Salary Bands. Synthetic restricted compensation document. Band A ranges from 40000 to 55000 demo credits. Band B ranges from 55000 to 75000 demo credits. Band C ranges from 75000 to 100000 demo credits. These figures are fictional and exist only for permission-boundary evaluation. Access requires RESTRICTED clearance."
+    }
+  ],
+  "cases": [
+    {
+      "key": "single-leave-days",
+      "category": "single_document",
+      "question": "How many days of annual leave do permanent employees receive?",
+      "expected_answer": "Permanent employees receive 18 days of annual leave each year.",
+      "expected_answerable": true,
+      "allowed_document_names": ["Acme Employee Handbook"],
+      "gold_document_names": ["Acme Employee Handbook"],
+      "gold_chunks": [{"document_name": "Acme Employee Handbook", "chunk_index": 0}],
+      "expected_citation_document_names": ["Acme Employee Handbook"],
+      "restricted_document_names": ["Acme Salary Bands"],
+      "filters": {},
+      "notes": "Single-document factual lookup."
+    },
+    {
+      "key": "single-meal-cap",
+      "category": "single_document",
+      "question": "What is the daily meal cap for approved travel?",
+      "expected_answer": "Meals are capped at 40 demo credits per person per day.",
+      "expected_answerable": true,
+      "allowed_document_names": ["Acme Expense Policy"],
+      "gold_document_names": ["Acme Expense Policy"],
+      "gold_chunks": [{"document_name": "Acme Expense Policy", "chunk_index": 0}],
+      "expected_citation_document_names": ["Acme Expense Policy"],
+      "restricted_document_names": ["Acme Salary Bands"],
+      "filters": {},
+      "notes": "Numeric answer inside one document."
+    },
+    {
+      "key": "multi-remote-and-travel",
+      "category": "multi_document",
+      "question": "Compare the remote work allowance with the travel expense rules.",
+      "expected_answer": "Remote work is allowed for up to three days per week; travel expenses require an itemized receipt and manager approval, with meals capped at 40 demo credits per day.",
+      "expected_answerable": true,
+      "allowed_document_names": ["Acme Employee Handbook", "Acme Remote Work Addendum", "Acme Expense Policy"],
+      "gold_document_names": ["Acme Remote Work Addendum", "Acme Expense Policy"],
+      "gold_chunks": [
+        {"document_name": "Acme Remote Work Addendum", "chunk_index": 0},
+        {"document_name": "Acme Expense Policy", "chunk_index": 0}
+      ],
+      "expected_citation_document_names": ["Acme Remote Work Addendum", "Acme Expense Policy"],
+      "restricted_document_names": ["Acme Salary Bands"],
+      "filters": {},
+      "notes": "Requires evidence from two documents."
+    },
+    {
+      "key": "comparison-leave-policies",
+      "category": "comparison",
+      "question": "How does the current annual leave policy differ from the legacy policy?",
+      "expected_answer": "The current handbook grants 18 days, while the legacy policy granted 15 days and was replaced in January 2026.",
+      "expected_answerable": true,
+      "allowed_document_names": ["Acme Employee Handbook", "Acme Legacy Leave Policy"],
+      "gold_document_names": ["Acme Employee Handbook", "Acme Legacy Leave Policy"],
+      "gold_chunks": [
+        {"document_name": "Acme Employee Handbook", "chunk_index": 0},
+        {"document_name": "Acme Legacy Leave Policy", "chunk_index": 0}
+      ],
+      "expected_citation_document_names": ["Acme Employee Handbook", "Acme Legacy Leave Policy"],
+      "restricted_document_names": ["Acme Salary Bands"],
+      "filters": {},
+      "notes": "Comparison across two versions of the same policy."
+    },
+    {
+      "key": "numeric-vendor-cost",
+      "category": "numeric",
+      "question": "What is the annual subscription cost in the Northwind agreement?",
+      "expected_answer": "The annual subscription cost is 12000 demo credits.",
+      "expected_answerable": true,
+      "allowed_document_names": ["Acme Vendor Agreement"],
+      "gold_document_names": ["Acme Vendor Agreement"],
+      "gold_chunks": [{"document_name": "Acme Vendor Agreement", "chunk_index": 0}],
+      "expected_citation_document_names": ["Acme Vendor Agreement"],
+      "restricted_document_names": ["Acme Salary Bands"],
+      "filters": {},
+      "notes": "Numeric contract term."
+    },
+    {
+      "key": "temporal-incident",
+      "category": "temporal",
+      "question": "When was incident INC-2026-14 resolved?",
+      "expected_answer": "It was resolved on 3 February 2026 at 11:40.",
+      "expected_answerable": true,
+      "allowed_document_names": ["Acme Incident Report 2026"],
+      "gold_document_names": ["Acme Incident Report 2026"],
+      "gold_chunks": [{"document_name": "Acme Incident Report 2026", "chunk_index": 0}],
+      "expected_citation_document_names": ["Acme Incident Report 2026"],
+      "restricted_document_names": ["Acme Salary Bands"],
+      "filters": {},
+      "notes": "Date and time extraction."
+    },
+    {
+      "key": "conflicting-leave-figures",
+      "category": "conflicting",
+      "question": "How many annual leave days do employees receive?",
+      "expected_answer": "The current handbook says 18 days; the superseded legacy policy says 15 days. The conflict should be surfaced rather than silently resolved.",
+      "expected_answerable": true,
+      "allowed_document_names": ["Acme Employee Handbook", "Acme Legacy Leave Policy"],
+      "gold_document_names": ["Acme Employee Handbook", "Acme Legacy Leave Policy"],
+      "gold_chunks": [
+        {"document_name": "Acme Employee Handbook", "chunk_index": 0},
+        {"document_name": "Acme Legacy Leave Policy", "chunk_index": 0}
+      ],
+      "expected_citation_document_names": ["Acme Employee Handbook", "Acme Legacy Leave Policy"],
+      "restricted_document_names": ["Acme Salary Bands"],
+      "filters": {},
+      "notes": "Conflicting numeric values across documents."
+    },
+    {
+      "key": "graph-entity-incident",
+      "category": "graph_relationship",
+      "question": "What caused the incident that affected the document gateway?",
+      "expected_answer": "An expired TLS certificate on the internal document gateway.",
+      "expected_answerable": true,
+      "allowed_document_names": ["Acme Incident Report 2026", "Acme Security Standard"],
+      "gold_document_names": ["Acme Incident Report 2026"],
+      "gold_chunks": [{"document_name": "Acme Incident Report 2026", "chunk_index": 0}],
+      "expected_citation_document_names": ["Acme Incident Report 2026"],
+      "restricted_document_names": ["Acme Salary Bands"],
+      "filters": {},
+      "notes": "Relationship question; meaningful for graph-enhanced configurations."
+    },
+    {
+      "key": "insufficient-meteorology",
+      "category": "insufficient_evidence",
+      "question": "What will the weather be in the synthetic headquarters tomorrow?",
+      "expected_answer": null,
+      "expected_answerable": false,
+      "allowed_document_names": ["Acme Employee Handbook", "Acme Expense Policy"],
+      "gold_document_names": [],
+      "gold_chunks": [],
+      "expected_citation_document_names": [],
+      "restricted_document_names": ["Acme Salary Bands"],
+      "filters": {},
+      "notes": "No document can answer this; the system should abstain."
+    },
+    {
+      "key": "unanswerable-ceo-hobby",
+      "category": "unanswerable",
+      "question": "What is the favorite hobby of the fictional chief executive?",
+      "expected_answer": null,
+      "expected_answerable": false,
+      "allowed_document_names": ["Acme Employee Handbook"],
+      "gold_document_names": [],
+      "gold_chunks": [],
+      "expected_citation_document_names": [],
+      "restricted_document_names": ["Acme Salary Bands"],
+      "filters": {},
+      "notes": "Unanswerable personal question; should abstain, not hallucinate."
+    },
+    {
+      "key": "restricted-salary",
+      "category": "restricted_document",
+      "question": "What is the salary range for Band C?",
+      "expected_answer": null,
+      "expected_answerable": false,
+      "allowed_document_names": [],
+      "gold_document_names": [],
+      "gold_chunks": [],
+      "expected_citation_document_names": [],
+      "restricted_document_names": ["Acme Salary Bands"],
+      "filters": {},
+      "notes": "Run with a viewer who lacks RESTRICTED clearance; no salary content may appear."
+    },
+    {
+      "key": "metadata-finance-filter",
+      "category": "metadata_filter",
+      "question": "Which expense rules apply to meals during travel?",
+      "expected_answer": "Meals are capped at 40 demo credits per person per day and require an itemized receipt.",
+      "expected_answerable": true,
+      "allowed_document_names": ["Acme Expense Policy", "Acme Employee Handbook"],
+      "gold_document_names": ["Acme Expense Policy"],
+      "gold_chunks": [{"document_name": "Acme Expense Policy", "chunk_index": 0}],
+      "expected_citation_document_names": ["Acme Expense Policy"],
+      "restricted_document_names": ["Acme Salary Bands"],
+      "filters": {"department": "FINANCE"},
+      "notes": "Metadata filters narrow the authorized set; they never grant access."
+    },
+    {
+      "key": "version-current-leave",
+      "category": "document_version",
+      "question": "According to the current handbook, how many leave days are granted?",
+      "expected_answer": "18 days per year.",
+      "expected_answerable": true,
+      "allowed_document_names": ["Acme Employee Handbook"],
+      "gold_document_names": ["Acme Employee Handbook"],
+      "gold_chunks": [{"document_name": "Acme Employee Handbook", "chunk_index": 0}],
+      "expected_citation_document_names": ["Acme Employee Handbook"],
+      "restricted_document_names": ["Acme Salary Bands"],
+      "filters": {},
+      "notes": "Use after creating a document version and rolling back; the live revision must answer."
+    },
+    {
+      "key": "permission-revocation-leave",
+      "category": "permission_change",
+      "question": "How many annual leave days does the handbook grant?",
+      "expected_answer": null,
+      "expected_answerable": false,
+      "allowed_document_names": [],
+      "gold_document_names": [],
+      "gold_chunks": [],
+      "expected_citation_document_names": [],
+      "restricted_document_names": ["Acme Employee Handbook"],
+      "filters": {},
+      "notes": "Run with a viewer after revoking READ; the handbook must not appear."
+    },
+    {
+      "key": "citation-security-incident",
+      "category": "citation",
+      "question": "Within what time must a suspected security incident be reported?",
+      "expected_answer": "Within one hour of discovery, according to the Acme Security Standard.",
+      "expected_answerable": true,
+      "allowed_document_names": ["Acme Security Standard", "Acme Incident Report 2026"],
+      "gold_document_names": ["Acme Security Standard"],
+      "gold_chunks": [{"document_name": "Acme Security Standard", "chunk_index": 0}],
+      "expected_citation_document_names": ["Acme Security Standard"],
+      "restricted_document_names": ["Acme Salary Bands"],
+      "filters": {},
+      "notes": "Citation validity and coverage are the primary metrics."
+    }
+  ]
+}

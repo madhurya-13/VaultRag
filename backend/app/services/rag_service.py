@@ -31,6 +31,7 @@ from dataclasses import dataclass, field, replace
 from typing import Callable
 from uuid import UUID, uuid4
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -85,7 +86,10 @@ from app.services.rag.multi_document_reasoner import (
 from app.services.rag.query_decomposer import build_query_plan
 from app.services.rag.reranker import rerank_evidence
 from app.services.rag.retrieval_analytics import record_retrieval_metrics
+from app.services.rag.retrieval_trace import RetrievalTrace
 from app.services.rag.semantic_retriever import retrieve_semantic_candidates
+from app.services.knowledge_gaps import record_gap_signal
+from app.services.tenant_settings import get_for_rag
 from app.services.vector_retrieval import fetch_chunk_texts, validate_top_k
 
 logger = logging.getLogger(__name__)
@@ -130,6 +134,9 @@ class RAGResult:
     total_ms: int = 0
     conversation_id: UUID | None = None
     message_id: UUID | None = None
+    # IDs only; populated when a caller requests a trace (evaluation and
+    # explainability). Never contains chunk text.
+    trace: RetrievalTrace | None = None
 
 
 def _resolve_search_mode(value: str | None) -> str:
@@ -262,12 +269,34 @@ def _persist_turn(
                     role="user",
                     content=question,
                 )
+                payload = citations_payload(result.sources)
+                document_ids = {source.document_id for source in result.sources}
+                if document_ids:
+                    from app.integrations.models import DocumentVersion
+
+                    versions = session.execute(
+                        select(DocumentVersion.document_id, DocumentVersion.document_version_id, DocumentVersion.version_number)
+                        .where(
+                            DocumentVersion.tenant_id == context.tenant_id,
+                            DocumentVersion.document_id.in_(document_ids),
+                            DocumentVersion.is_current.is_(True),
+                        )
+                    ).all()
+                    version_map = {
+                        document_id: (version_id, number)
+                        for document_id, version_id, number in versions
+                    }
+                    for citation in payload:
+                        meta = version_map.get(UUID(citation["document_id"]))
+                        if meta is not None:
+                            citation["document_version_id"] = str(meta[0])
+                            citation["version_number"] = meta[1]
                 assistant = add_message(
                     session,
                     conversation,
                     role="assistant",
                     content=result.answer,
-                    citations=citations_payload(result.sources),
+                    citations=payload,
                     evidence_level=result.evidence_level,
                 )
                 history = recent_messages(
@@ -304,6 +333,7 @@ def _finalize(
     denied_count: int,
     retrieval_error: bool = False,
     error_code: str | None = None,
+    trace: RetrievalTrace | None = None,
 ) -> RAGResult:
     total_ms = int((time.monotonic() - request_started) * 1000)
     stored_conversation_id = conversation_id
@@ -321,7 +351,22 @@ def _finalize(
         total_ms=total_ms,
         conversation_id=stored_conversation_id,
         message_id=message_id,
+        trace=trace if trace is not None else result.trace,
     )
+
+    if trace is None:
+        try:
+            record_gap_signal(
+                tenant_id=context.tenant_id,
+                question=question,
+                candidate_count=candidate_count,
+                authorized_count=authorized_count,
+                denied_count=denied_count,
+                retrieved_chunks=final.retrieved_chunks,
+                conflicts=len(final.conflicts),
+            )
+        except Exception:
+            logger.exception("Failed to record knowledge-gap signal")
 
     if settings.rag_analytics_enabled:
         record_retrieval_metrics(
@@ -385,6 +430,8 @@ def answer_question(
     embedding_service: EmbeddingService | None = None,
     llm_service: OllamaLLMService | None = None,
     reranker: SupportsRerank | None = None,
+    trace_limit: int = 0,
+    retrieval_only: bool = False,
 ) -> RAGResult:
     settings = get_settings()
     factory = session_factory or SessionLocal
@@ -396,7 +443,69 @@ def answer_question(
     if not context.organization.is_active:
         raise ForbiddenError("Organization is inactive")
 
+    # Tenant settings can narrow, never widen, server maxima. Authorization,
+    # RLS and citation validation are not configurable.
+    try:
+        with factory() as settings_session:
+            with settings_session.begin():
+                set_tenant_context(settings_session, context.tenant_id)
+                tenant = get_for_rag(settings_session, context.tenant_id)
+    except Exception:
+        logger.exception("Failed to load tenant settings; using server defaults")
+        tenant = {}
+    settings = settings.model_copy(
+        update={
+            "rag_search_mode_default": tenant.get(
+                "default_search_mode", settings.rag_search_mode_default
+            ),
+            "rag_rerank_enabled": settings.rag_rerank_enabled
+            or bool(tenant.get("rerank_enabled", False)),
+            "knowledge_graph_enabled": settings.knowledge_graph_enabled
+            and bool(tenant.get("graph_enabled", True)),
+            "rag_semantic_candidates": min(
+                settings.rag_semantic_candidates,
+                int(tenant.get("semantic_candidates", settings.rag_semantic_candidates)),
+            ),
+            "rag_keyword_candidates": min(
+                settings.rag_keyword_candidates,
+                int(tenant.get("keyword_candidates", settings.rag_keyword_candidates)),
+            ),
+            "rag_hybrid_candidates": min(
+                settings.rag_hybrid_candidates,
+                int(tenant.get("hybrid_candidates", settings.rag_hybrid_candidates)),
+            ),
+            "rag_min_similarity": max(
+                settings.rag_min_similarity,
+                float(tenant.get("min_similarity", settings.rag_min_similarity)),
+            ),
+            "rag_evidence_strong_threshold": float(
+                tenant.get(
+                    "evidence_strong_threshold", settings.rag_evidence_strong_threshold
+                )
+            ),
+            "rag_evidence_moderate_threshold": float(
+                tenant.get(
+                    "evidence_moderate_threshold",
+                    settings.rag_evidence_moderate_threshold,
+                )
+            ),
+            "rag_evidence_limited_threshold": float(
+                tenant.get(
+                    "evidence_limited_threshold",
+                    settings.rag_evidence_limited_threshold,
+                )
+            ),
+        }
+    )
+
     validate_top_k(top_k)
+    top_k = min(
+        top_k,
+        int(tenant.get("max_top_k", top_k)),
+        settings.rag_top_k_max,
+    )
+    if top_k < 1:
+        raise BadRequestError("top_k must be at least 1")
     mode = _resolve_search_mode(search_mode)
     embedder = embedding_service or get_embedding_service()
 
@@ -678,6 +787,17 @@ def answer_question(
         raise ServiceUnavailableError("Permission-aware retrieval failed") from exc
 
     retrieval_ms = int((time.monotonic() - retrieval_started) * 1000)
+    trace = RetrievalTrace(
+        search_mode=mode,
+        rerank_used=reranker is not None or settings.rag_rerank_enabled,
+        graph_used=graph_result is not None,
+        candidate_count=candidate_count,
+        authorized_count=authorized_count,
+        denied_count=denied_count,
+        filters=(
+            filters.model_dump(exclude_none=True) if filters is not None else {}
+        ),
+    )
     logger.info(
         "RAG stage=retrieval_authorization query_id=%s duration_ms=%d mode=%s "
         "candidates=%d authorized=%d denied=%d",
@@ -721,6 +841,7 @@ def answer_question(
             candidate_count=candidate_count,
             authorized_count=authorized_count,
             denied_count=denied_count,
+            trace=trace,
         )
 
     # ------------------------------------------------------------------
@@ -731,9 +852,15 @@ def answer_question(
         reranker_impl = CrossEncoderReranker(settings.rag_reranker_model)
 
     rerank_started = time.monotonic()
+    # A trace request raises the ranking ceiling only for the trace itself; the
+    # context sent to the model still uses the configured top-N, so evaluation
+    # observes the real retrieval order without changing answer behaviour.
+    ranking_limit = settings.rag_context_top_n
+    if trace_limit > 0:
+        ranking_limit = max(ranking_limit, min(trace_limit, settings.rag_top_k_max))
     ranked = rerank_evidence(
         authorized,
-        limit=settings.rag_context_top_n,
+        limit=ranking_limit,
         question=plan.rewritten or question,
         reranker=reranker_impl,
         min_similarity=settings.rag_min_similarity,
@@ -743,6 +870,13 @@ def answer_question(
         rerank_min_score=settings.rag_rerank_min_score,
     )
     rerank_ms = int((time.monotonic() - rerank_started) * 1000)
+    trace = replace(
+        trace,
+        ranked_chunk_ids=tuple(item.chunk_id for item in ranked),
+        ranked_document_ids=tuple(
+            dict.fromkeys(item.document_id for item in ranked)
+        ),
+    )
     logger.info(
         "RAG stage=rerank query_id=%s duration_ms=%d mode=%s authorized=%d selected=%d",
         query_id,
@@ -784,14 +918,16 @@ def answer_question(
             candidate_count=candidate_count,
             authorized_count=authorized_count,
             denied_count=denied_count,
+            trace=trace,
         )
 
     # ------------------------------------------------------------------
     # 6. Bounded context + evidence grouping + conflict detection
     # ------------------------------------------------------------------
     counter = getattr(embedder, "count_tokens", None)
+    context_ranked = ranked[: settings.rag_context_top_n]
     built = build_context(
-        ranked,
+        context_ranked,
         max_tokens=settings.rag_max_context_tokens,
         token_counter=counter,
     )
@@ -827,11 +963,48 @@ def answer_question(
             candidate_count=candidate_count,
             authorized_count=authorized_count,
             denied_count=denied_count,
+            trace=trace,
         )
 
-    evidence_items = build_evidence_items(built.sources, ranked)
+    evidence_items = build_evidence_items(built.sources, context_ranked)
     evidence_groups = group_evidence(evidence_items)
     conflicts = detect_conflicts(built.sources)
+
+    # Evaluation may measure retrieval and citation coverage without spending
+    # generation time. This path stops after the same authorization, reranking
+    # and context gates; it never widens or skips authorization.
+    if retrieval_only:
+        return _finalize(
+            context=context,
+            settings=settings,
+            factory=factory,
+            query_id=query_id,
+            conversation_id=conversation_id,
+            question=question,
+            result=RAGResult(
+                answer="",
+                sources=tuple(built.sources),
+                retrieved_chunks=len(built.sources),
+                model=None,
+                search_mode=mode,
+                evidence_level=LEVEL_INSUFFICIENT,
+                evidence_score=0.0,
+                evidence_signals={
+                    "source_count": len(built.sources),
+                    "retrieval_only": True,
+                },
+                conflicts=conflicts,
+                source_groups=evidence_groups,
+                retrieval_ms=retrieval_ms,
+                rerank_ms=rerank_ms,
+                llm_ms=0,
+            ),
+            request_started=request_started,
+            candidate_count=candidate_count,
+            authorized_count=authorized_count,
+            denied_count=denied_count,
+            trace=trace,
+        )
 
     try:
         _audit(
@@ -982,6 +1155,7 @@ def answer_question(
             candidate_count=candidate_count,
             authorized_count=authorized_count,
             denied_count=denied_count,
+            trace=trace,
         )
 
     # ------------------------------------------------------------------
@@ -1038,6 +1212,7 @@ def answer_question(
             candidate_count=candidate_count,
             authorized_count=authorized_count,
             denied_count=denied_count,
+            trace=trace,
         )
 
     # ------------------------------------------------------------------
@@ -1091,9 +1266,10 @@ def answer_question(
             candidate_count=candidate_count,
             authorized_count=authorized_count,
             denied_count=denied_count,
+            trace=trace,
         )
 
-    final_items = build_evidence_items(allowed_sources, ranked)
+    final_items = build_evidence_items(allowed_sources, context_ranked)
     final_groups = group_evidence(final_items)
 
     logger.info(
@@ -1162,4 +1338,5 @@ def answer_question(
         candidate_count=candidate_count,
         authorized_count=authorized_count,
         denied_count=denied_count,
+        trace=trace,
     )

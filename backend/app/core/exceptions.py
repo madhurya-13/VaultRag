@@ -66,6 +66,11 @@ class UnsupportedMediaTypeError(AppError):
     default_detail = "Unsupported file type"
 
 
+class UnprocessableEntityError(AppError):
+    status_code = 422
+    default_detail = "Request validation failed"
+
+
 class UnprocessableDocumentError(AppError):
     status_code = 422
     default_detail = "Document could not be processed"

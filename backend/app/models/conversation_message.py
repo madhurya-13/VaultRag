@@ -20,6 +20,7 @@ from sqlalchemy import (
     Index,
     String,
     Text,
+    UniqueConstraint,
     func,
     text,
 )
@@ -61,6 +62,12 @@ class ConversationMessage(Base):
     )
 
     __table_args__ = (
+        # Referenced by answer_feedback's tenant-safe composite foreign key.
+        UniqueConstraint(
+            "tenant_id",
+            "message_id",
+            name="uq_conversation_messages_tenant_message",
+        ),
         ForeignKeyConstraint(
             ["tenant_id", "conversation_id", "user_id"],
             [

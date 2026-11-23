@@ -126,6 +126,9 @@ class RAGSource(StrictRequestModel):
     similarity: float | None = None
     rerank_score: float | None = None
     matched_by: list[str] = Field(default_factory=list)
+    document_version_id: UUID | None = None
+    version_number: int | None = None
+    citation_verified: bool = False
 
 
 class RAGSourceGroup(StrictRequestModel):
@@ -147,6 +150,18 @@ class RAGConflict(StrictRequestModel):
     sources: list[RAGSource] = Field(default_factory=list)
 
 
+class RAGRetrievalExplanation(StrictRequestModel):
+    mode: str
+    semantic_contribution: bool = False
+    keyword_contribution: bool = False
+    graph_contribution: bool = False
+    reranked: bool = False
+    filters: dict[str, str] = Field(default_factory=dict)
+    authorized_candidates: int = 0
+    denied_candidates: int = 0
+    evidence_rationale: str | None = None
+
+
 class RAGTimings(StrictRequestModel):
     retrieval_ms: int = 0
     rerank_ms: int = 0
@@ -165,6 +180,8 @@ class RAGAskResponse(StrictRequestModel):
     conflicts: list[RAGConflict] = Field(default_factory=list)
     insufficient_evidence: bool = False
     timings: RAGTimings = Field(default_factory=RAGTimings)
+    explanation: RAGRetrievalExplanation | None = None
+    feedback_enabled: bool = True
     conversation_id: UUID | None = None
     message_id: UUID | None = None
 
@@ -224,6 +241,9 @@ class ConversationCitation(StrictRequestModel):
     page_start: int
     page_end: int
     document_name: str | None = None
+    document_version_id: UUID | None = None
+    version_number: int | None = None
+    citation_verified: bool = False
 
 
 class ConversationMessageResponse(StrictRequestModel):

@@ -16,6 +16,7 @@ from app.dependencies.authentication import (
     require_capability,
 )
 from app.schemas.rag import (
+    RAGRetrievalExplanation,
     ConversationCitation,
     ConversationCreateRequest,
     ConversationDetailResponse,
@@ -55,14 +56,19 @@ from app.services.rag.retrieval_analytics import (
 )
 from app.services.rag_service import answer_question
 from app.services.security_audit import log_security_event
+from app.services.tenant_settings import get_for_rag
 
 router = APIRouter(prefix="/rag", tags=["Permission-Aware RAG"])
 
 EXCERPT_CHARS = 400
 
 
-def _source(source: ContextSource) -> RAGSource:
+def _source(
+    source: ContextSource,
+    versions: dict | None = None,
+) -> RAGSource:
     excerpt = " ".join(source.text.split())[:EXCERPT_CHARS].strip()
+    version = (versions or {}).get(source.document_id)
     return RAGSource(
         document_id=source.document_id,
         document_name=source.document_name,
@@ -73,7 +79,33 @@ def _source(source: ContextSource) -> RAGSource:
         similarity=source.similarity,
         rerank_score=source.rerank_score,
         matched_by=list(source.matched_by),
+        document_version_id=version[0] if version else None,
+        version_number=version[1] if version else None,
+        citation_verified=True,
     )
+
+
+def _current_versions(db: Session, context: AuthenticatedContext, document_ids: set) -> dict:
+    if not document_ids:
+        return {}
+    from app.integrations.models import DocumentVersion
+    from sqlalchemy import select
+
+    rows = db.execute(
+        select(
+            DocumentVersion.document_id,
+            DocumentVersion.document_version_id,
+            DocumentVersion.version_number,
+        ).where(
+            DocumentVersion.tenant_id == context.tenant_id,
+            DocumentVersion.document_id.in_(document_ids),
+            DocumentVersion.is_current.is_(True),
+        )
+    ).all()
+    return {
+        document_id: (version_id, number)
+        for document_id, version_id, number in rows
+    }
 
 
 def _conversation_response(conversation, message_count: int) -> ConversationResponse:
@@ -134,6 +166,8 @@ def _message_response(
             continue
         if not authorize_document(db, context, document_id, "READ").allowed:
             continue
+        version_id = item.get("document_version_id")
+        version_number = item.get("version_number")
         citations.append(
             ConversationCitation(
                 document_id=document_id,
@@ -141,6 +175,9 @@ def _message_response(
                 page_start=page_start,
                 page_end=page_end,
                 document_name=item.get("document_name"),
+                document_version_id=UUID(str(version_id)) if version_id else None,
+                version_number=int(version_number) if isinstance(version_number, int) else None,
+                citation_verified=bool(item.get("citation_verified", False)),
             )
         )
     level = (
@@ -182,27 +219,61 @@ def ask(
         filters=payload.filters,
         conversation_id=payload.conversation_id,
         request_meta=request_meta,
+        trace_limit=10,
     )
 
+    from app.core.database import set_tenant_context
+
+    set_tenant_context(db, context.tenant_id)
+    versions = _current_versions(
+        db, context, {source.document_id for source in result.sources}
+    )
+    try:
+        feedback_enabled = bool(get_for_rag(db, context.tenant_id)["feedback_enabled"])
+    except Exception:
+        feedback_enabled = True
+
     conflict_sources = {
-        conflict.topic: [_source(source) for source in conflict.sources]
+        conflict.topic: [_source(source, versions) for source in conflict.sources]
         for conflict in result.conflicts
     }
+    trace = result.trace
+    explanation = None
+    if trace is not None:
+        explanation = RAGRetrievalExplanation(
+            mode=trace.search_mode,
+            semantic_contribution=any(
+                "semantic" in source.matched_by for source in result.sources
+            ),
+            keyword_contribution=any(
+                "keyword" in source.matched_by for source in result.sources
+            ),
+            graph_contribution=trace.graph_used,
+            reranked=trace.rerank_used,
+            filters=dict(trace.filters),
+            authorized_candidates=trace.authorized_count,
+            denied_candidates=trace.denied_count,
+            evidence_rationale=(
+                f"Evidence level {result.evidence_level} from {result.retrieved_chunks} "
+                f"authorized sources; {len(result.conflicts)} conflict(s) detected."
+            ),
+        )
     return RAGAskResponse(
         answer=result.answer,
-        sources=[_source(source) for source in result.sources],
+        sources=[_source(source, versions) for source in result.sources],
         source_groups=[
             RAGSourceGroup(
                 document_id=group.document_id,
                 document_name=group.document_name,
                 sources=[
-                    _source(
-                        next(
-                            source
-                            for source in result.sources
-                            if source.chunk_id == item.chunk_id
+                                        _source(
+                            next(
+                                source
+                                for source in result.sources
+                                if source.chunk_id == item.chunk_id
+                            ),
+                            versions,
                         )
-                    )
                     for item in group.items
                     if any(
                         source.chunk_id == item.chunk_id
@@ -230,6 +301,8 @@ def ask(
             for conflict in result.conflicts
         ],
         insufficient_evidence=result.insufficient_evidence,
+        explanation=explanation,
+        feedback_enabled=feedback_enabled,
         timings=RAGTimings(
             retrieval_ms=result.retrieval_ms,
             rerank_ms=result.rerank_ms,

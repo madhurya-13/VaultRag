@@ -113,6 +113,7 @@ def citations_payload(sources: Sequence[ContextSource]) -> list[dict]:
             "page_start": source.page_start,
             "page_end": source.page_end,
             "document_name": source.document_name,
+            "citation_verified": True,
         }
         for source in sources
     ]

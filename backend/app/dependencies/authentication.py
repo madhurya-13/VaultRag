@@ -124,6 +124,36 @@ def get_current_auth(
     )
 
 
+def load_authenticated_context(
+    db: Session, *, tenant_id: UUID, user_id: UUID
+) -> AuthenticatedContext | None:
+    """Build the same trusted context for a server-selected tenant user.
+
+    This is intentionally **not** an authentication dependency: it must never be
+    reachable with a user-supplied identity. Evaluation runs use it to execute
+    cases as a chosen reviewer/viewer so authorization is exercised with that
+    user's real roles, attributes and permissions. The caller is responsible for
+    an ADMIN capability check and for passing a user from the same tenant; the
+    function itself re-validates tenant, active state and roles from PostgreSQL.
+    """
+    set_tenant_context(db, tenant_id)
+    user = db.scalar(
+        select(User).where(User.user_id == user_id, User.tenant_id == tenant_id)
+    )
+    if user is None or not user.is_active:
+        return None
+    organization = db.scalar(
+        select(Organization).where(Organization.tenant_id == tenant_id)
+    )
+    if organization is None or not organization.is_active:
+        return None
+    return AuthenticatedContext(
+        user=user,
+        organization=organization,
+        roles=tuple(role_names_for_user(db, tenant_id, user_id)),
+    )
+
+
 def require_admin(
     context: AuthenticatedContext = Depends(get_current_auth),
 ) -> AuthenticatedContext:
