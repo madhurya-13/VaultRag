@@ -180,7 +180,8 @@ Detailed threat model and design decisions: [docs/SECURITY.md](docs/SECURITY.md)
   conflicting, temporal, graph-relationship and permission-change cases.
 - Real metrics computed from persisted results: Recall/Precision/MRR/NDCG at
   K=3/5/10 and document-level recall, plus answerability, citation validity and
-  coverage, token-F1, faithfulness/relevance proxies and a latency summary.
+  coverage, answer-level F1, faithfulness and relevance proxies, and a latency
+  summary.
 - Six configurations (semantic, keyword, hybrid, hybrid+rerank, hybrid+graph,
   hybrid+graph+rerank). If cross-encoder reranking is disabled, the rerank
   configurations use a deterministic lexical proxy that is labeled as such in
