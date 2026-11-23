@@ -49,6 +49,11 @@ logs/
 *.sqlite3
 pgdata/
 database/dumps/
+backups/
+*.dump
+playwright-report/
+test-results/
+backend/.local/
 
 # ---------------------------------------------------------------------------
 # Private uploaded documents

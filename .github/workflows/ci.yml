@@ -59,6 +59,10 @@ jobs:
         run: |
           ruff check app --exclude app/tests
           ruff check ../tests/security
+      - name: Alembic migration and model drift check
+        run: |
+          alembic upgrade head
+          alembic check
       - name: Bandit high severity scan
         run: bandit -r app -ll -x app/tests
       - name: Python dependency audit
@@ -88,6 +92,18 @@ jobs:
       - run: npm test
       - name: Production build
         run: npm run build
+
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Compose configuration
+        env:
+          POSTGRES_PASSWORD: ci-postgres
+          APP_DB_PASSWORD: ci-app
+          MIGRATOR_DB_PASSWORD: ci-migrator
+          JWT_SECRET_KEY: ci-only-secret-value-long-enough-for-tests-0123456789
+        run: docker compose config --quiet
 
   secrets:
     runs-on: ubuntu-latest

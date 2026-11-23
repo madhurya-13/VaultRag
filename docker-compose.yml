@@ -92,6 +92,58 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
 
+  graph-worker:
+    profiles: ["workers"]
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command:
+      ["python", "scripts/graph_worker.py", "--tenant-id", "${GRAPH_WORKER_TENANT_ID:-00000000-0000-0000-0000-000000000000}"]
+    environment: *app-environment
+    volumes:
+      - vaultrag_documents:/var/lib/vaultrag/documents
+      - vaultrag_models:/var/cache/vaultrag
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      api: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os; os.kill(1, 0)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: [internal]
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+  integration-worker:
+    profiles: ["workers"]
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command:
+      ["python", "scripts/integration_worker.py", "--tenant-id", "${INTEGRATION_WORKER_TENANT_ID:-00000000-0000-0000-0000-000000000000}"]
+    environment: *app-environment
+    volumes:
+      - vaultrag_documents:/var/lib/vaultrag/documents
+      - vaultrag_models:/var/cache/vaultrag
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      api: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os; os.kill(1, 0)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: [internal]
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
   web:
     build:
       context: .
