@@ -1,0 +1,10 @@
+title = "VaultRAG gitleaks configuration"
+
+# Keep the stock gitleaks rule set; only the known false positive below is excused.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "README evaluation metrics wording ('coverage, token-F1, faithfulness/relevance proxies') is documentation, not a credential"
+regexTarget = "line"
+regexes = ['''coverage, token-F1, faithfulness/relevance proxies''']
